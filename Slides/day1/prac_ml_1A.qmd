@@ -1,0 +1,1231 @@
+---
+title: SUPERVISED MACHINE LEARNING
+subtitle: From the Workflow to Regularization
+author:
+  - name: Marco R. Steenbergen
+    orcid: 0000-0002-5709-5165
+    email: steenbergen@ipz.uzh.ch
+    affiliations: University of Zurich
+date: last-modified
+resource-path: ["..", "."]
+format:
+  clean-revealjs:
+    revealjs-plugins:
+      - tabset
+    pdf-separate-fragments: true
+    mermaid-format: svg
+bibliography: /Users/prior/Resources/References/master.bib
+self-contained: true
+embed-resources: true
+editor_options:
+  chunk_output_type: console
+---
+
+## Plan for the Morning
+
+::: {style="font-size: 90%"}
+|  |  |
+|------------------------------------|------------------------------------|
+| **Part 1** | What machine learning is, the supervised learning problem, the ML workflow, regression as a machine, our first `tidymodels` flow |
+|  | *Exercise 1 + debrief* |
+| **Part 2** | Bias and variance, regularization, choosing and validating hyper-parameters, elastic nets in R |
+|  | *Exercise 2 + debrief* |
+:::
+
+## R Packages for this Lecture
+
+::::: columns
+::: {.column width="50%"}
+- `GGally` for bivariate analysis and visualization
+
+- `glmnet` for regularized linear and logistic regression
+
+- `mlbench` for ML benchmark data sets
+
+- `naniar` for missingness
+:::
+
+::: {.column width="50%"}
+- `future` for parallel processing during tuning
+
+- `skimr` for univariate summaries
+
+- `tidymodels` for ML
+
+- `tidyverse` for data manipulation
+:::
+:::::
+
+# Defining the Field {background-color="#40666e"}
+
+## Of Experiences, Tasks, and Performance
+
+::: callout-note
+### Definition of Machine Learning (ML)
+
+The design of algorithms that learn from data and are capable of improvement as new experiences emerge. Specifically, the algorithm "is said to learn from experience $E$ with respect to some task $T$ and performance measure $P$, if its performance at task $T$, as measured by $P$, improves with experience $E$" [@mitchell1997Machine, 2].
+:::
+
+::: notes
+Experience is data. Data, tasks, and performance metrics are the holy trilogy of machine learning.
+:::
+
+## Key Principles
+
+- Inductive: Algorithms learn from data; little a priori structure (cf. statistical modeling).
+
+- Predictive: All of supervised ML = predictive modeling $\Rightarrow$ predictive performance is key.
+
+## ML Tasks
+
+1.  Unsupervised machine learning:
+    - Does not require labeled outcomes.
+2.  Supervised machine learning:
+    - Requires labeled outcomes.
+    - These could be
+      - Classes, i.e., [**classification tasks**]{.alert}.
+      - Numerical scores, i.e., [**regression tasks**]{.alert}.
+
+## Data Architectures
+
+- Structured data: Data that is organized in predefined models such as rows and columns.
+- Unstructured data: Data that lack a uniform stucture (emails, videos, text, etc.).
+
+## Mapping the Field
+
+![](images/ds_socsci_map.png){fig-align="center"}
+
+## Prominent Social Science Use Cases for ML
+
+1.  **Automation** of tedious, time-consuming, and error-prone coding tasks (e.g., classifying open-ended text at scale).
+2.  **Prediction** of behavior, outcomes, or trends (especially useful in applied policy or institutional settings).
+3.  **Measurement** of latent social phenomena from unstructured or complex data.
+4.  **Causal discovery and heterogeneity**: using ML to get a better handle on confounders and heterogeneous treatment effects.
+5.  **Induction** by discovering novel empirical patterns and regularities in data to help generate new theories [@breiman2001Statistical; @korb2004Introduction].
+6.  **Abduction** [@peirce1975Collected] by identifying anomalies, surprises, or puzzles in massive datasets that challenge existing theoretical frameworks and force conceptual revision [@brandt2021Abductive].
+
+# The Generic Supervised Learning Problem {background-color="#40666e"}
+
+## The Learning Goal
+
+::: callout-note
+## Model
+
+An algorithm learns the model
+
+$$y_i = f \left( \boldsymbol{x}_i, \boldsymbol{\theta} \right)$$
+
+Here:
+
+- $i$ is an instance (unit)
+
+- $y$ is the predictive target (outcome variable)---there can be more than one
+
+- $f$ is an unknown function
+
+- $\boldsymbol{x}$ is the feature vector (predictor variables)
+
+- $\boldsymbol{\theta}$ contains biases and weights (parameters)
+:::
+
+## The Prediction Task
+
+::: callout-note
+## Prediction
+
+Once we have learnt the model, we predict:
+
+$$\hat{y}_i = \hat{f} \left( \boldsymbol{x}_i^*, \hat{\boldsymbol{\theta}} \right)$$
+
+Here,
+
+- $\hat{y}$ is the prediction—a score, class, or probability
+
+- $\hat{f}$ is the learnt function
+
+- $\boldsymbol{x}^*$ is a subset of features (see next slide)
+
+- $\hat{\boldsymbol{\theta}}$ are the learnt biases and weights
+:::
+
+## The Feature Selection Task
+
+- Supervised ML is not just used for prediction.
+
+- We also want to assess [**feature importance**]{.alert}: how important is a feature for the predictive task.
+
+- One step further is [**feature selection**]{.alert}:
+
+  - Automatically drop irrelevant features so that $\boldsymbol{x}^* \subset \boldsymbol{x}$.
+  - Not always done, but can be very useful to guide data collection efforts.
+
+## From Model to Prediction
+
+- The learning in ML entails finding $\hat{f}$, $\hat{\boldsymbol{\theta}}$, and $\boldsymbol{x}^*$.
+
+- The learning space is dictated by the algorithm:
+
+  - Some algorithms are more flexible than others
+
+  - E.g., some allow for automatic interaction detection while others do not
+
+- The learning process can be cast as a statistical **optimization** problem:
+
+  - Within the constraints of the model, we approximate $f$, $\boldsymbol{\theta}$, and select features to minimize loss.
+
+## Loss and Performance
+
+- [**Loss**]{.alert} = error = any discrepancy between $y$ and $\hat{y}$.
+- The **loss function** quantifies the totality of prediction error $L = l(\boldsymbol{y}, \hat{\boldsymbol{y}})$.
+- Different loss functions exist for different tasks, but the principle is always the same: within the constraints of the algorithm and the feature pool, we **minimize loss**. This is what we mean by optimization.
+
+::: callout-note
+## Metrics
+
+A performance metric maps the quality of predictions after optimization. While there are many performance metrics [@japkowicz2011Evaluating], they all have this form:
+
+$$P = p(\boldsymbol{y}, \hat{\boldsymbol{y}})$$
+:::
+
+# The Inductive Dilemma {background-color="#40666e"}
+
+## Resubstitution Error
+
+- Imagine we do the learning and assess the performance on the exact same data.
+
+  - We call this [**resubstitution**]{.alert}.
+
+- Intuitively, this feels like cheating and it is.
+
+- @efron1983Estimating shows that resubstitution results in optimistic performance estimates.
+
+- The lesson: Do not train and evaluate with the same data!
+
+## A Dilemma
+
+- Ideally, one would have two data sets:
+
+  - One for training
+
+  - Another for testing (evaluation)
+
+- Frequently, we only have one data set in our hands, however.
+
+- What to do: Split the data.
+
+## The Split Sample Approach
+
+::::: columns
+::: {.column width="50%"}
+```{r}
+#| echo: false
+#| message: false
+library(tidyverse)
+dummy <- data.frame(x = c(1), y = c(2))
+ggplot(dummy) +
+  geom_rect(aes(xmin = 0, xmax = 1.5,
+                ymin = 0, ymax = 0.5),
+            fill = "#386cb0") +
+  geom_rect(aes(xmin = 1.55, xmax = 2.35,
+                ymin = 0, ymax = 0.5),
+            fill = "#fdb462") +
+  annotate("text",
+           x = 0.75,
+           y = 0.25,
+           label = "TRAINING \np",
+           color = "white",
+           size = 15) +
+  annotate("text",
+           x = 1.95,
+           y = 0.25,
+           label = "TESTING \n1 - p",
+           color = "white",
+           size = 15) +
+  theme_void()
+```
+:::
+
+::: {.column width="50%"}
+- If necessary (and allowed) randomize the $n$ instances.
+- Set aside a fraction of $p$ instances for training $\Rightarrow$ [**training set**]{.alert} has a size of $n_1 = p \cdot n$.
+- Set aside a fraction of $1-p$ instances for evaluation $\Rightarrow$ [**test set**]{.alert} has a size of $n_2 = n - n_1$.
+- $0.70 \leq p \leq 0.98$, depending on the complexity of the learning task and the amount of data available.
+:::
+:::::
+
+# The Machine Learning Workflow {background-color="#40666e"}
+
+## Overview
+
+![](images/ml_workflow.png){fig-align="center"}
+
+## Getting to Know the Data
+
+- Because ML is data-driven, we should *always* start by taking a look at our data.
+- Things you should look at:
+  - Missing values.
+  - Univariate descriptive statistics and visualizations that could flag a lack of variance or outliers.
+  - Bivariate descriptions and visualizations that give insight about relationships and possible multicollinearity among features.
+
+## Data Cleaning and the Leakage Trap
+
+- Gross errors in the data should be corrected—removal of duplicates and structural errors (e.g., mis-matched strings).
+- However, beware of **data leakage**:
+  - Information from outside the training dataset is inadvertently used to create or tune a machine learning model.
+  - E.g., do not do imputation with the mean across all of the data—this contaminates the future training data with information from the future test set.
+
+::: callout-important
+Anything that *estimates* something from the data---means, Box-Cox parameters, scaling constants, etc.---must happen **after** the split, inside the recipe.
+:::
+
+## From Raw Data to Candidate Models
+
+**Data splitting**
+
+- Instances are randomly assigned to test and training sets: simple random sampling, or stratified on the target or a feature.
+- For reproducibility always set a seed.
+
+**Feature engineering** = using domain knowledge to transform raw data into features that expose the underlying problem to the algorithm:
+
+- Feature transformation
+- Feature construction
+- Feature extraction (PCA) and pre-selection
+
+## From Candidate Models to a Verdict
+
+- Most algorithms produce not one model but many, because they have **hyper-parameters**: parameters that affect the behavior of the algorithm and cannot be estimated. These are the "knobs" data scientists turn.
+
+- [**Model selection**]{.alert} = determining the best setting of the hyper-parameters. [**Tuning**]{.alert} = generating the candidate values, via (1) grid search, (2) random search, or (3) sequential model-based optimization (SMBO). We use *validation* to pick the winner.
+
+- **Final training:** freeze the optimal hyper-parameters, train once more on the full training set.
+
+- **Evaluation:** only *now* do we touch the test set. Those metrics largely drive whether we continue with the algorithm or go back to the drawing board.
+
+## The Computational Workflow in `tidymodels`
+
+![](images/tidymodels%20ecosystem.jpg){fig-align="center"}
+
+# Regression as a Machine {background-color="#40666e"}
+
+## The Regression Model
+
+- We do not typically think of regression as a machine learning algorithm, but it is.
+
+- The target is a numeric score—regression task.
+
+- We have the following model:
+
+  $$y_i = \underbrace{\alpha}_{\text{Bias}} + \sum_{j=1}^P \underbrace{\beta_j}_{\text{Weight}} \cdot x_{ij} + \text{error}$$
+
+## Visualization in 2 ways
+
+::::: columns
+::: {.column width="50%"}
+### Hyperplane
+
+```{r}
+#| echo: false
+library(scatterplot3d)
+
+set.seed(1234)
+n  <- 50
+x1 <- runif(n, min = 2, max = 4)          # feature 1
+x2 <- runif(n, min = 1, max = 2)          # feature 2
+y  <- 1 + 0.8 * x1 + 1.5 * x2 +           # true surface
+      rnorm(n, mean = 0, sd = 0.3)        # noise
+
+mreg_df <- data.frame(x1, x2, y)
+LM <- lm(y ~ x1 + x2, data = mreg_df)
+
+s3d <- scatterplot3d(x1, x2, y,
+                     pch = 19, type = "p", color = "darkgray",
+                     grid = TRUE, box = FALSE,
+                     mar = c(2.5, 2.5, 2, 1.5),
+                     angle = 55)
+s3d$plane3d(LM, draw_polygon = TRUE, draw_lines = TRUE,
+            polygon_args = list(col = rgb(.1, .2, .7, .5)))
+wh <- resid(LM) > 0
+s3d$points3d(x1[wh], x2[wh], y[wh], pch = 20, color = "darkgray")
+```
+:::
+
+::: {.column width="50%"}
+### Feature Space
+
+```{r}
+#| echo: false
+library(ggrepel)
+library(ggthemes)
+mreg_df <- mreg_df %>%
+  mutate(name = as.character(round(y, digits = 2)))
+ggplot(mreg_df, aes(x = x1, y = x2), col = "#31688EFF",
+       label = name) +
+  geom_point(size = 2.5, col = "#31688EFF") +
+  geom_label_repel(aes(label = name),
+                  box.padding   = 0.10,
+                  point.padding = 0.15,
+                  label.size = 0.05,
+                  label.padding = 0.02,
+                  segment.color = "#31688EFF",
+                  max.overlaps = 15)+
+  theme_bw()
+```
+:::
+:::::
+
+## Loss Function
+
+- We use a training set to learn $\alpha, \beta_1, \cdots, \beta_P$.
+
+- A typical loss function is the $L_2$-norm (cf. ordinary least squares):
+
+  $$L = \sum_{i=1}^{n_1} \left(y_i - \underbrace{\left \{ \alpha + \sum_j \beta_j \cdot x_{ij} \right \}}_{\hat{y}_i} \right)^2$$
+
+- We minimize the loss by finding the best possible values of the bias and weights in the training set.
+
+## Performance
+
+- We apply the trained biases and weights and use that to make predictions in the test set.
+- Those predictions are compared to the actual target values in the test set.
+- Common performance metrics are:
+  - RMSE: $P = \sqrt{\sum_{i=1}^{n_2} (y_i - \hat{y}_i)^2}$.
+  - R-squared: $R^2 = \text{cor}_{y_i,\hat{y}_i \in \text{test set}}^2$.
+
+# Building Our First Workflow Together {background-color="#40666e"}
+
+## The Political Economy of Housing Values
+
+- @harrison1978Hedonic present data on median housing values in census tracts in the Boston area.
+- They are particularly interested in the effect of pollution on housing values.
+- We also add property taxes to our analysis.
+- The data can be found in the `mlbench` package.
+
+## Data Screening
+
+::: panel-tabset
+### Data
+
+```{r}
+#| echo: true
+#| message: false
+library(mlbench)
+library(tidyverse)
+data("BostonHousing2")
+df <- BostonHousing2 |>
+  select(cmedv, nox, tax, tract)
+
+```
+
+### Missing
+
+```{r}
+#| echo: true
+#| message: false
+library(naniar)
+gg_miss_var(df, show_pct = FALSE) +
+  labs(y = "# Missing") +
+  theme_minimal()
+```
+
+### Univariate
+
+```{r}
+#| echo: true
+#| message: false
+library(skimr)
+skimmed <- skim(df[,1:3])
+yank(skimmed, "numeric")
+```
+
+### Bivariate I
+
+```{r}
+#| echo: true
+#| eval: false
+library(GGally)
+df_small <- df[,1:3]
+p <- ggpairs(df_small,
+             lower = list(continuous = "smooth_loess"),
+             upper = list(continuous = wrap(ggally_cor, displayGrid = FALSE)))
+p + theme_minimal()
+```
+
+### Bivariate II
+
+```{r}
+#| message: false
+library(GGally)
+df_small <- df[,1:3]
+p <- ggpairs(df_small,
+             lower = list(continuous = "smooth_loess"),
+             upper = list(continuous = wrap(ggally_cor, displayGrid = FALSE)))
+p + theme_minimal()
+```
+
+:::
+
+## Conclusion from Screening
+
+- Skewness $\Rightarrow$ Box-Cox transformation [@box1964Analysis] or logarithm.
+  - High risk of data leakage when estimation involved (Box-Cox).
+  - Must be done after the split using the `prep()`and `bake()` logic of `tidymodels`. However, target is the exception.
+- Bi-modality due to cases with high property tax rates $\Rightarrow$ add dummy:
+  - Suburbs with high accessibility to radial highways—structural property.
+  - This can be done before the split because no estimation needs to be done.
+
+## Initial Split
+
+::: panel-tabset
+### Data
+
+```{r}
+#| echo: true
+df_new <- df |>
+  mutate(target = log10(cmedv),
+         high_tax = ifelse(tax > 600, 1, 0)) |>
+  select(tract, target, nox, tax, high_tax)
+```
+
+### Split
+
+```{r}
+#| echo: true
+#| message: false
+library(tidymodels)
+tidymodels_prefer()
+set.seed(1292)
+housing_split <- initial_split(df_new, prop = 0.75)
+housing_split
+```
+
+### Apply
+
+```{r}
+#| echo: true
+train_df <- training(housing_split)
+test_df <- testing(housing_split)
+```
+:::
+
+## Feature Engineering
+
+::: panel-tabset
+### Goal
+
+On the training data, we do the following:
+
+- Change the role of "tract" to that of an identifier.
+- Perform a Box-Cox transformation on "nox" and "tax".
+
+### Syntax
+
+```{r}
+#| echo: true
+housing_recipe <- recipe(target ~ ., data = train_df) |>
+  update_role(tract, new_role = "id") |>
+  step_BoxCox(nox, tax)
+```
+
+### Result
+
+```{r}
+#| message: true
+housing_recipe
+```
+:::
+
+## Model and Workflow
+
+```{r}
+#| echo: true
+housing_model <- linear_reg() |>
+  set_mode("regression") |>
+  set_engine("lm")
+housing_wf <- workflow() |>
+  add_model(housing_model) %>%
+  add_recipe(housing_recipe)
+```
+
+## Training
+
+::: panel-tabset
+### Comment
+
+- There are no hyper-parameters.
+- We do not need to tune and can go straight to the final fit.
+
+### Syntax
+
+```{r}
+#| echo: true
+housing_fit <- fit(housing_wf, train_df)
+```
+
+### Results 1
+
+```{r}
+#| echo: true
+tidy(housing_fit)
+```
+
+### Results 2
+
+```{r}
+#| echo: true
+glance(housing_fit)
+```
+:::
+
+## Performance
+
+::: panel-tabset
+### Prediction
+
+```{r}
+#| echo: true
+housing_fit |>
+  predict(test_df) |>
+  bind_cols(test_df)
+```
+
+### Metrics
+
+```{r}
+#| echo: true
+housing_fit |>
+  predict(test_df) |>
+  bind_cols(test_df) |>
+  metrics(truth = target, estimate = .pred)
+```
+:::
+
+# Exercise 1 {background-color="#40666e"}
+
+## Your Turn
+
+::: callout-tip
+## Task
+
+Look at `communities_and_crime.Rdata` taken from [UC Irvine Machine Learning Repository](https://archive.ics.uci.edu/dataset/183/communities+and+crime). The target is log per capita violent crimes. Select 10 features that help to predict this target.
+:::
+
+Work through the same five steps we just did:
+
+1.  **Screen** your two new features—missingness, distribution, relationship to the target.
+2.  **Decide** whether either needs a transformation, and whether that transformation belongs before or after the split.
+3.  **Extend** `housing_recipe` accordingly.
+4.  **Refit** and predict on the test set.
+5.  **Compare** RMSE and $R^2$ against the baseline model.
+
+## Debrief
+- What features did you select and why?
+- How well does the regression model with those features perform?
+
+# The Risks of Machine Learning {background-color="#40666e"}
+
+## Machine Learning Errors
+
+| Error Source | Description | Cause(s) |
+|------------------------|------------------------|------------------------|
+| Irreducible error | Error that cannot be eliminated | \(1\) missing features; (2) measurement error; and (3) random shocks |
+| Bias error | Systematic prediction error | Under-fitting |
+| Variance error | Lack of generalizability of the model | Over-fitting—too much flexibility |
+
+## Illustrating Bias and Variance Error
+
+![](images/overunderfit.png){fig-align="center"}
+
+::: {style="font-size: 75%"}
+**Source:** [Seema Singh](https://towardsdatascience.com/understanding-the-bias-variance-tradeoff-165e6942b229)
+:::
+
+## The Bias-Variance Trade-off
+
+- Flexibility $\uparrow$, bias error $\downarrow$ but variance error $\uparrow$.
+
+- Flexibility $\downarrow$, variance error $\downarrow$ but bias error $\uparrow$.
+
+## We Need to Consider Both Bias and Variance
+
+- [**Mean squared error**]{.alert}:
+
+  $$\text{MSE} = \text{Bias}^2 + \text{Variance}$$
+
+- We want to minimize MSE.
+
+- Sometimes that means introducing a bit of bias in order to reduce the variance $\Rightarrow$ regularization.
+
+## An Aside: Another Trade-Off of Supervised Machine Learning
+
+-   Next to the bias-variance trade-off, we sometimes speak of a performance-interpretability trade-off.
+-   Better performing models often are more difficult to interpret.
+-   The field of **interpretable machine learning** addresses this trade-off [@biecek2018DALEX; @molnar2018Iml; @ribeiro2016Why].
+
+# What Is Regularization? {background-color="#40666e"}
+
+## The Basic Idea
+
+- [**Regularization**]{.alert} adds a penalty for over-fitting to the loss function.
+
+- This penalty serves as a constraint on the optimization problem.
+
+- We can also think of this as a shrinkage estimator, with small coefficients being shrunk more than larger coefficients.
+
+- The most important regularization procedures are
+
+  1.  The lasso.
+
+  2.  Tikhonov regularization/ridge regression.
+
+  3.  Elastic nets.
+
+## The Lasso
+
+::::: columns
+::: {.column width="60%"}
+- [**Lasso**]{.alert} = least absolute shrinkage and selection operator [@tibshirani1996Regression].
+
+- We impose $\sum_{j=1}^P \lvert \beta_j \rvert \leq t$.
+
+- Using Lagrange multipliers, the lasso loss is $L_{\text{lasso}} = L_2 + \lambda \left( \sum_{j=1}^P \lvert \beta_j \rvert - t \right)$.
+
+- Retaining only the terms in $\beta$, the optimization problem is
+
+  $$\min_{\alpha, \boldsymbol{\beta}} \sum_{i=1}^{n_1} \left( \alpha + \boldsymbol{x}_i^\top \boldsymbol{\beta} - y_i \right)^2 + \lambda \lvert \boldsymbol{\beta} \rvert$$
+
+- $\lambda$ is a hyper-parameter.
+:::
+
+::: {.column width="40%"}
+![](images/lasso.png){fig-align="right"}
+:::
+:::::
+
+## What the Lasso Does
+
+```{=html}
+<!-- TIME NOTE: the "2nd Example" tab is the one to skip verbally if you are
+     running behind. The 1st example carries the soft-thresholding idea. -->
+```
+
+::: panel-tabset
+### 1st Example
+
+```{r}
+#| echo: false
+#| message: false
+library(ggthemes)
+ols <- seq(-3, 3, 0.1)
+f1 <- ifelse(ols >= 1, ols-1,
+             ifelse(ols <= -1, ols+1, 0))
+f2 <- ifelse(ols >=2, ols-2,
+             ifelse(ols <= -2, ols+2, 0))
+f3 <- ols
+par(mar=c(5,5,4,2))
+plot(ols, f1, type = "l", lwd = 3, col = "#21918c", xlab = expression(beta^OLS),
+     ylab = expression(beta^lasso), main = "Orthonormal Features")
+points(ols, f2, type = "l", lwd = 3, col = "#fde725")
+points(ols, f3, type = "l", lwd = 3, col = "#440154")
+legend("topleft",
+       legend=c(expression(lambda==0), expression(lambda==1), expression(lambda==2)),
+       col=c("#440154", "#21918c", "#fde725"),
+       lty = c(1, 1, 1),
+       lwd = c(3, 3, 3))
+```
+
+### 2nd Example
+
+```{r}
+#| echo: false
+#| message: false
+library(glmnet)
+library(plotmo)
+# MASS called with :: so it cannot mask dplyr::select later in the deck
+mu <- c(5,5)
+sd <- c(2,2)
+r <- 0.6
+sigma <- matrix(
+  c(sd[1]^2,r*sd[1]*sd[2],r*sd[1]*sd[2],sd[2]^2),
+  nrow = 2, ncol = 2, byrow = TRUE
+)
+n <- 100
+set.seed(1617)
+X <- MASS::mvrnorm(n, mu, sigma)
+e <- rnorm(n, 0, 2)
+y <- -2 + X[,1] + 0.2*X[,2] + e
+lasso_fit <- glmnet(X, y, alpha = 1)
+plot_glmnet(lasso_fit, lwd = 3, col = c("#21918c","#fde725"),
+            main = "Correlated Features")
+```
+:::
+
+## Tikhonov Regularization
+
+```{=html}
+<!-- MERGED: the q-norm bridge from essex1_3.qmd:122 ("Variations on a Theme")
+     is folded in as the first two bullets. -->
+```
+
+::::: columns
+::: {.column width="40%"}
+![](images/ridge.png){fig-align="left"}
+:::
+
+::: {.column width="50%"}
+- The lasso is a special case of $\lambda \lvert \boldsymbol{\beta} \rvert^q$ with $q = 1$. Setting $q = 2$ gives [**Tikhonov regularization**]{.alert}, a.k.a. ridge regression.
+
+- We minimize the $L_2$-norm subject to $\sum_{j=1}^P \beta_j^2 \leq t$ [@tikhonov1963Solution].
+
+- Hence,
+
+  $$\min_{\boldsymbol{\alpha, \beta}} \sum_{i=1}^{n_1} \left( \alpha + \boldsymbol{x}_i^\top \boldsymbol{\beta} - y_i \right)^2 + \lambda \sum_{j=1}^P \beta_j^2$$
+:::
+:::::
+
+## Elastic Nets
+
+<!-- MERGED from essex1_3.qmd:148 and :160. -->
+
+- Elastic nets are a mixture of the lasso and Tikhonov regularization [@zou2005Regularization].
+
+- For $\gamma \in [0,1]$, define the penalty
+
+  $$P(\gamma) = \sum_{j=1}^P \left[ \frac{1}{2} (1 - \gamma) \beta_j^2 + \gamma \lvert \beta_j \rvert \right]$$
+
+- Then
+
+  $$\min_{\boldsymbol{\beta}} \sum_{i=1}^{n_1} \left( \alpha + \boldsymbol{x}_i^\top \boldsymbol{\beta} - y_i \right)^2 + \lambda P(\gamma)$$
+
+- This reduces to the lasso for $\gamma = 1$ and to Tikhonov regularization for $\gamma = 0$. So $\gamma$ is a second hyper-parameter alongside $\lambda$.
+
+## Important
+
+- A valid use of regularization requires that features are put on the same scale.
+
+- `tidymodels` offers several ways to accomplish this:
+  - `step_normalize()` standardizes the features.
+  - `step_range()` scales the minimum and maximum to 0 and 1, respectively.
+
+# How to Select and Validate Hyper-Parameters {background-color="#40666e"}
+
+## A Wealth of Possibilities I
+
+- In rare cases—e.g., principal component analysis—hyper-parameters take on a finite number of discrete values $\Rightarrow$ grid search: try each value.
+- This is not our case: $\gamma$ and $\lambda$ are both continuous and there are endless combinations.
+- The simplest possibility is to do a random search:
+  - Max entropy when there is 1 hyper-parameter.
+  - Latin hyper-cubes with max entropy when there are multiple hyper-parameters.
+- The point of a **space-filling design**: plain random sampling leaves empty voids and redundant clusters, so we force the candidate points to spread evenly across the parameter space [@husslage2011Spacefilling; @mckay1979Comparison].
+
+## A Wealth of Possibilities II
+
+- We can also use SMBO = sequential model-based optimization [@hutter2011Sequential] such as a Bayesian algorithm [@snoek2012Practical].
+- The advantages is that it allows for
+  - Exploration: trying new sets of hyper-parameters
+  - Exploitation: refining the areas with high posterior mass
+- Often this works better and is faster than max entropy or Latin hyper-cubes.
+
+## Evaluating the Grid
+
+- Now that we have set the grid, how do we evaluate different choices of hyper-parameter values?
+- The basic idea is this:
+  1.  Set $(\gamma, \lambda)$\.
+  2.  Train the model with those values.
+  3.  Evaluate performance without touching the test data—they come at the very end.
+- The problem: resubstitution error [@efron1983Estimating].
+- We need to set aside data within the training set to **validate** our choice of hyper-parameters.
+
+## Building Validation Sets
+
+1.  The validation split.
+2.  $v$-Fold cross-validation.
+3.  Bootstrapping.
+
+## The Validation Split
+
+::::: columns
+::: {.column width="50%"}
+- Take the $n_1$ training instances.
+- Set a probability of $q$ for training use and $1 - q$ for validation use:
+- $q \cdot n_1$ training instances proper---used to estimate $\boldsymbol{\theta}|\boldsymbol{\tau}$, where $\boldsymbol{\tau}$ is a set of hyper-parameter values from the grid.
+- $(1 - q) \cdot n_1$ validation instances---used to assess performance given $\boldsymbol{\tau}$.
+- We iterate over the grid and pick the $\boldsymbol{\tau}$ that maximizes performance in the [**validation set**]{.alert}.
+:::
+
+::: {.column width="50%"}
+**Advantage:** only one training run per hyper-parameter combination.
+
+**Disadvantages [@molinaro2005Prediction]:**
+
+1.  We lose training data: $q \cdot n_1 < n_1$.
+2.  We may end up with an atypical validation set.
+3.  We obtain only one performance value per combination.
+
+:::
+:::::
+
+## The Validation Split in `tidymodels`
+
+```{r}
+#| echo: true
+# We set q = 0.75
+# NOTE: validation_split() is deprecated in recent rsample. If this errors,
+# use: initial_validation_split(df_new) |> validation_set()
+# The object is called val_split, not validation_set, so it cannot shadow
+# rsample's validation_set() function.
+set.seed(2158)
+val_split <- validation_split(train_df, prop = 3/4)
+val_split
+```
+
+## $v$-Fold Cross-Validation
+
+::::: columns
+::: {.column width="50%"}
+```{r}
+#| message: false
+library(tidyverse)
+dummy <- data.frame(x = c(1), y = c(2))
+ggplot(dummy) +
+  geom_rect(aes(xmin = 0, xmax = 0.75,
+                ymin = 0, ymax = 0.25),
+            fill = "#386cb0") +
+  geom_rect(aes(xmin = 0.8, xmax = 1.55,
+                ymin = 0, ymax = 0.25), fill = "#386cb0") +
+  geom_rect(aes(xmin = 1.6, xmax = 2.35,
+                ymin = 0, ymax = 0.25),
+            fill = "#fdb462") +
+  geom_rect(aes(xmin = 0, xmax = 0.75,
+                ymin = -0.3, ymax = -0.05),
+            fill = "#386cb0") +
+  geom_rect(aes(xmin = 0.8, xmax = 1.55,
+                ymin = -0.3, ymax = -0.05),
+            fill = "#fdb462") +
+  geom_rect(aes(xmin = 1.6, xmax = 2.35,
+                ymin = -0.3, ymax = -0.05),
+            fill = "#386cb0") +
+  geom_rect(aes(xmin = 0, xmax = 0.75,
+                ymin = -0.6, ymax = -0.35),
+            fill = "#fdb462") +
+  geom_rect(aes(xmin = 0.8, xmax = 1.55,
+                ymin = -0.6, ymax = -0.35),
+            fill = "#386cb0") +
+  geom_rect(aes(xmin = 1.6, xmax = 2.35,
+                ymin = -0.6, ymax = -0.35),
+            fill = "#386cb0") +
+  annotate("text",
+           x = 0.375,
+           y = 0.125,
+           label = "TRAIN",
+           color = "white",
+           size = 10) +
+   annotate("text",
+           x = 1.175,
+           y = 0.125,
+           label = "TRAIN",
+           color = "white",
+           size = 10) +
+  annotate("text",
+           x = 1.975,
+           y = 0.125,
+           label = "VALIDATE",
+           color = "white",
+           size = 10) +
+  annotate("text",
+           x = 0.375,
+           y = -0.175,
+           label = "TRAIN",
+           color = "white",
+           size = 10) +
+  annotate("text",
+           x = 1.175,
+           y = -0.175,
+           label = "VALIDATE",
+           color = "white",
+           size = 10) +
+  annotate("text",
+           x = 1.975,
+           y = -0.175,
+           label = "TRAIN",
+           color = "white",
+           size = 10) +
+  annotate("text",
+           x = 0.375,
+           y = -0.475,
+           label = "VALIDATE",
+           color = "white",
+           size = 10) +
+  annotate("text",
+           x = 1.175,
+           y = -0.475,
+           label = "TRAIN",
+           color = "white",
+           size = 10) +
+  annotate("text",
+           x = 1.975,
+           y = -0.475,
+           label = "TRAIN",
+           color = "white",
+           size = 10) +
+  theme_void()
+```
+:::
+
+::: {.column width="50%"}
+[$v$-Fold Cross-Validation]{.alert} steps:
+
+- Randomly assign instances to $k$ folds (typically, $v = 10$).
+
+- Each fold is held out once for validation purposes $\Rightarrow$ $v$ performance estimates per $\boldsymbol{\tau}$.
+
+- Each fold is used $v-1$ times for training purposes $\Rightarrow$ no loss of training data.
+:::
+:::::
+
+## Variations on Cross-Validation
+
+- The higher we set $k$, the more data will be used for training at any given time.
+
+- An extreme case is [**leave out one CV**]{.alert} (LOOCV), where $k = n_1 - 1$.
+
+- In each run, bias is reduced but variance is increased.
+
+- Another way to reduce bias is to **repeatedly** assign instances to the folds, each time using a different seed.
+
+- [**Monte Carlo CV**]{.alert} selects the folds randomly each time, which may cause folds to contain overlapping instances [@xu2001Monte].
+
+## Resampling in `tidymodels`
+
+::: panel-tabset
+### Vanilla
+
+```{r}
+#| echo: true
+set.seed(1923)
+vanilla_folds <- vfold_cv(train_df, v = 10)
+vanilla_folds
+```
+
+### Repeated
+
+```{r}
+#| echo: true
+set.seed(1923)
+repeated_folds <- vfold_cv(train_df, v = 10, repeats = 5)
+repeated_folds
+```
+
+### LOOCV
+
+```{r}
+#| echo: true
+set.seed(1923)
+loocv_folds <- loo_cv(train_df)
+loocv_folds
+```
+
+:::
+
+## Bootstrapping
+
+::::: columns
+::: {.column width="45%"}
+![](images/bootstrap.png){fig-align="center"}
+:::
+
+::: {.column width="55%"}
+- The [**bootstrap**]{.alert} consists of repeatedly sampling $n_1$ instances with replacement [@efron1979Bootstrap].
+
+- Sampled instances are used for training.
+
+- Non-sampled instances are used for validation.
+
+```{r}
+#| echo: true
+set.seed(1923)
+booted <- bootstraps(train_df, times = 100)
+```
+:::
+:::::
+
+# Doing Regularization in R {background-color="#40666e"}
+
+## Workflow
+
+::: panel-tabset
+### Recipe
+
+```{r}
+#| echo: true
+# The order matters for this recipe
+elastic_recipe <- recipe(target ~ ., data = train_df) |>
+  update_role(tract, new_role = "id") |>
+  step_BoxCox(nox, tax) |>
+  step_range(all_numeric_predictors())
+```
+
+### Model
+
+```{r}
+#| echo: true
+# Penalty = lambda; mixture = gamma
+elastic_model <- linear_reg(
+  penalty = tune(),
+  mixture = tune()
+) |>
+  set_mode("regression") |>
+  set_engine("glmnet")
+```
+
+### Workflow
+
+```{r}
+#| echo: true
+elastic_wf <- workflow() |>
+  add_recipe(elastic_recipe) |>
+  add_model(elastic_model)
+```
+:::
+
+## Tuning the Model
+
+::: panel-tabset
+### Grid
+
+```{r}
+#| echo: true
+# Extract hyperparameter set and update space bounds if needed
+glmnet_param <- extract_parameter_set_dials(elastic_model)
+
+# Create a space-filling design with 50 configurations
+# For serious tuning, you should increase this
+set.seed(1561)
+elastic_grid <- grid_space_filling(
+  glmnet_param,
+  size = 50,
+  type = "latin_hypercube"
+)
+
+print(elastic_grid, n = 6)
+```
+
+### CV
+
+```{r}
+#| echo: true
+# 10-fold CV with 5 repeats
+set.seed(1923)
+elastic_cv <- vfold_cv(train_df, v = 10, repeats = 5)
+```
+
+### Iterating
+
+```{r}
+#| echo: true
+#| message: false
+library(future)
+
+# Setting evaluation metrics for validation
+elastic_metrics <- metric_set(rsq)
+
+# Parallel backend — tune talks to future directly (tune >= 2.0)
+plan(multisession)
+
+# Verbose = TRUE gives some feedback that can be useful
+elastic_tune <- elastic_wf |>
+  tune_grid(
+    resamples = elastic_cv,
+    grid = elastic_grid,
+    metrics = elastic_metrics,
+    control = control_grid(save_pred = TRUE, verbose = FALSE)
+  )
+
+# Release the workers
+plan(sequential)
+```
+
+### Plot I
+
+```{r}
+#| echo: true
+#| eval: false
+# Mean R2 across folds by constellation
+autoplot(elastic_tune) +
+  theme_light() +
+  labs(
+    title = "Hyperparameter Tuning for Elastic Net",
+    subtitle = "Space-Filling (Latin Hypercube) Design Results"
+  )
+```
+
+### Plot II
+
+```{r}
+autoplot(elastic_tune) +
+  theme_light() +
+  labs(
+    title = "Hyperparameter Tuning for Elastic Net",
+    subtitle = "Space-Filling (Latin Hypercube) Design Results"
+  )
+```
+
+### Best
+
+```{r}
+#| echo: true
+# Extract best hyperparameter set
+elastic_best <- select_best(elastic_tune, metric = "rsq")
+elastic_best
+```
+:::
+
+## Final Fit and Performance
+
+::: panel-tabset
+### Final Fit
+
+```{r}
+#| echo: true
+elastic_updated <- finalize_model(elastic_model,
+                                  elastic_best)
+elastic_final_wf <- elastic_wf |>
+  update_model(elastic_updated)
+elastic_fit <- elastic_final_wf |>
+  fit(data = train_df)
+elastic_fit |>
+  extract_fit_parsnip() |>
+  tidy()
+```
+
+### Test Set
+
+```{r}
+#| echo: true
+elastic_fit |>
+  predict(test_df) |>
+  bind_cols(test_df) |>
+  metrics(truth = target, estimate = .pred)
+```
+:::
+
+::: notes
+Compare these numbers back to the OLS results from before the first exercise. With only three features there is very little for the penalty to do—the honest lesson is that regularization earns its keep when P is large.
+:::
+
+# Exercise 2 {background-color="#40666e"}
+
+## Your Turn
+
+::: callout-tip
+## Task
+
+Repeat the elastic net flow for the model you ran on the Communities and Crime data. Inspect the coefficient for the features.
+:::
+
+::: callout-note
+## Debrief
+
+Which features survived the penalty and which were shrunk to (near) zero? Did the optimal $\gamma$ land closer to the lasso or to ridge? How does test-set performance compare to regression without regularization?
+:::
+
+## References

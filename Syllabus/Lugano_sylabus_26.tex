@@ -1,0 +1,134 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+	allcolors=blue
+    }
+\usepackage{tgbonum}
+\usepackage[backend=biber, style=apa]{biblatex}
+\addbibresource{/Users/prior/Resources/References/master.bib}
+
+\title{Practical Machine Learning for Surveys, Panels, and Experiments}
+\author{Updated Syllabus}
+\date{Summer School in Social Science Methods, Lugano, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{table}[h]
+\centering
+\begin{footnotesize}  % Move font size outside tabular
+\begin{tabular}{p{2cm}p{2.75cm}p{.5cm}p{2cm}p{2.25cm}}
+\hline\hline
+\textbf{Instructor:} & Marco Steenbergen & & \textbf{Times:} & 8.30--17.00 \\
+\textbf{Email:} & \href{mailto:steenbergen@ipz.uzh.ch}{steenbergen@ipz.uzh.ch} & & \textbf{Room:} & Campus OVEST, A32 Red Building \\
+\textbf{Office Hours:} & 8.00-8.30 in room & & &  \\
+\hline\hline
+\end{tabular}
+\end{footnotesize}
+\end{table}
+
+\vspace{.25in}
+\begin{small}
+\noindent This is an updated syllabus. The update consists of four elements. First, some topics have been rearranged. Second, I added a block on panel data, since that is in the course title and was a bit hidden in the original course plan. Third, I made space for project discussions for those who are interested. Importantly, there has been no loss of topics compared to the official course listing. Finally, I made room for a quick introduction to Python, which we shall use on Day 5.
+\end{small}
+
+\section{Overview}
+Machine learning (ML) is changing how social scientists approach familiar research problems. Issues such as missing data, model specification, measurement error, heterogeneity, and complex longitudinal patterns are not new. However, modern ML methods offer new ways to diagnose, correct, and exploit these challenges. This course shows how ML can directly improve the quality, robustness, and creativity of empirical social science research. Rather than focusing on abstract model families, we anchor each method in concrete tasks researchers face every day: cleaning messy data, building better measures, designing credible causal analyses, and extracting structure from complex datasets. \\
+
+\noindent Through hands-on sessions, participants will learn how to combine traditional statistical thinking with modern ML workflows, including advanced tree-based algorithms, causal ML, and deep learning for tabular and survey data. By the end of the week, students will not only know how these methods work, but when they meaningfully expand what social scientists can learn from their data.
+
+\section{Learning Goals}
+\begin{itemize}
+	\item Understand workflows and key decisions in ML.
+	\item Be familiar with the main ML stands in the social sciences, to wit (1) tree-based learners in the form of ensembles and (2) deep learning, including tabular foundation models.
+	\item Learn key applications to causal inference, missing data, and data analysis.
+	\item Receive hands-on experience in R (\texttt{tidymodels}) and Python (day 5).
+	\item Learn how to incorporate the workflows into your own research projects.
+\end{itemize}
+
+\section{Computational Tools}
+On days 1-4, we will be working with R and RStudio. Please install these packages on your laptop prior to the course start. Instructions can be found on \href{https://rstudio-education.github.io/hopr/starting.html}{RStudio Education}. \\
+
+\noindent Starting in the afternoon of day 4 and continuing into day 5, we will switch to Python. We will run this on \href{https://colab.research.google.com/}{Google Colab}, i.e., in the cloud. Please make sure to set up a Google account prior to day 4.
+
+\section{Course Schedule}
+\emph{Important information:} (1) Since the course days are long, I have refrained from adding readings to the course schedule. The slides contain extensive bibliographies of key readings in each area of ML. I recommend that you consult those readings if you want to learn more about specific topics. (2) To break up the long days, a rhythm of lecturing, hands-on exercise, and debriefing will be maintained throughout the course. (3) All course materials can be accessed from \href{https://github.com/steenbergen/lugano26}{GitHub}.
+
+\subsection{Day 1---Morning: Basics of ML}
+\paragraph{Content}
+We use regression analysis as a model to introduce the key elements of machine learning. This includes (1) Predictive versus inferential goals; (2) train/test logic, resampling, and cross-validation; and (3) regularization, tuning, and model selection.
+
+\paragraph{Exercise}
+We will apply the methods to the \href{https://archive.ics.uci.edu/dataset/183/communities+and+crime}{Communities and Crime} data.
+
+\subsection{Day 1---Afternoon: Ensemble Learners}
+\paragraph{Content}
+We start by introducing greedy algorithms in the form of classification and regression trees (CARTs). We then turn to ensembles (bagging and boosting, specifically) as ways to improve on greediness. This culminates in a discussion of random forests, BART, and gradient boosting. By now, these are key tools of data analysis in the social sciences.
+
+\paragraph{Exercise}
+We continue our analysis of the \href{https://archive.ics.uci.edu/dataset/183/communities+and+crime}{Communities and Crime} data using ensembles of tree-based learners.
+
+\subsection{Day 2---Morning: Survey Research with ML I}
+\paragraph{Content}
+\textbf{Missing data} are a common nuisance in survey research, although they arise elsewhere as well. Since so much of political science is based on survey data, missingness can be a real nuisance. Today we discuss both traditional and ML-based imputation techniques.
+
+\paragraph{Exercise}
+Students select a particular country from the latest round of the \href{https://www.europeansocialsurvey.org/}{European Social Survey}. We practice both traditional and ML-based imputation on this data and debrief.
+
+\subsection{Day 2---Afternoon: Survey Research with ML II}
+\paragraph{Content}
+Other woos of survey research are response set and extreme response styles. Recent developments in psychometrics now make it possible to detect such \textbf{response styles} using ML. A second topic for the afternoon concerns \textbf{multilevel analysis}. Given that the social sciences increasingly rely on cross-cultural surveys, we also discuss how to adopt ML techniques to hierarchical data structures like those found in the \href{https://www.europeansocialsurvey.org/}{European Social Survey}.
+
+\paragraph{Exercise}
+In a first exercise, we use ML to detect response styles in the \href{https://www.europeansocialsurvey.org/}{European Social Survey}. In a second exercise, we discuss how to perform ML with the same data.
+
+\subsection{Day 3---Morning: Causal Inference with ML I}
+\paragraph{Content}
+Over the past two decades, the social sciences have taken a distinctive causal turn. Increasingly, ML plays an important role in causal inference. We begin. the day by discussing the causal inference problem that ML can help solve. We then turn to \textbf{double machine learning} and post-double selection methods to arrive at modern solutions for causal inference.
+
+\paragraph{Exercise}
+We analyze data from the \href{https://www.ojp.gov/pdffiles1/Digitization/59202NCJRS.pdf}{National Supported Work Demonstration} and Lalonde's de-randomization to demonstrate how ML can help with causal inference.
+
+\subsection{Day 3---Afternoon: Causal Inference with ML II and Research Projects}
+\paragraph{Content}
+Causal inference is concerned with treatment effects---how does an intervention affect an outcome? Most of the time, however, treatment effects are not homogeneous but vary across sub-groups. How can one detect \textbf{heterogeneous effects}? We discuss a variety of techniques, including R-learners, T-learners, and X-learners.
+
+\paragraph{Exercise}
+We shall look into heterogeneous treatment effects for the \href{https://www.ojp.gov/pdffiles1/Digitization/59202NCJRS.pdf}{National Supported Work Demonstration}.
+
+\paragraph{Individual Consultations}
+From 15.00-17.00, there is time to discuss your \textbf{individual research projects}. It would be great if you could send a 1-paragraph description beforehand. \emph{Note:} It is not mandatory to take advantage of the consultation. However, it is a way to make the course more relevant to your own needs.
+
+\subsection{Day 4---Morning: Causal Inference with ML III}
+\paragraph{Content}
+We start the day by discussing causal forests, policy trees, and interpretation in the context of finding \textbf{heterogeneous treatment effects}. We then move toward \textbf{panel data}, which bring their own challenges in ML and are also key to a great deal of causal inference.
+
+\paragraph{Exercise}
+We shall analyze the effect of life events on well-being using the \href{https://forscenter.ch/projects/swiss-household-panel/}{Swiss Household Panel}.
+
+\subsection{Day 4---Afternoon: Introduction to Python}
+\paragraph{Content}
+We use the afternoon to learn some Python programming basics. You will not be an advanced Python programmer after this session, but you will know enough to survive Day 5.
+
+\paragraph{Exercise}
+We shall run the afternoon session as one continuous exercise.
+
+\subsection{Day 5---Morning: Deep Learning and Tabular Foundation Models}
+\paragraph{Content}
+Deep learning is all about building artificial neural networks. After discussing the basics of feedforward neural networks (FFNs), we shall build one. We will then discuss the traditional view that neural networks are good for unstructured data such as text and images, but falter when it comes to structured data such as data frames. We end by discussing how tabular foundation models are challenging this traditional view.
+
+\paragraph{Exercise}
+We return to the \href{https://archive.ics.uci.edu/dataset/183/communities+and+crime}{Communities and Crime} data. We contrast a tuned extreme gradient boosting algorithm with a home-grown FFN, before turning to a tabular foundation model.
+
+\subsection{Day 5--Afternoon: Applications of Deep Learning}
+\paragraph{Content}
+Neural networks are everywhere these days. We do not have the time to get into models for text and vision, but there are plenty of other social science applications that are within our reach. We discuss (variational) autoencoders and models for anomaly detection.
+
+\paragraph{Exercise}
+For the exercise, we return to the \href{https://www.europeansocialsurvey.org/}{European Social Survey}.
+
+\printbibliography
+
+\end{document}
