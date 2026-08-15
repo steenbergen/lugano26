@@ -1,0 +1,453 @@
+---
+title: BAYESIAN ADDITIVE REGRESSION TREES
+subtitle: Neither Bagging Nor Boosting, Yet So Powerful
+author:
+  - name: Marco R. Steenbergen
+    orcid: 0000-0002-5709-5165
+    email: steenbergen@ipz.uzh.ch
+    affiliations: University of Zurich
+date: last-modified
+resource-path: ["..", "."]
+format:
+  clean-revealjs:
+    revealjs-plugins:
+      - tabset
+    pdf-separate-fragments: true
+    mermaid-format: svg
+bibliography: /Users/prior/Resources/References/master.bib
+self-contained: true
+embed-resources: true
+editor_options:
+  chunk_output_type: console
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+## Where We Left Off {.smaller}
+
+Yesterday every algorithm did the same thing --- searched over a feature and a cut-point --- and differed only in the score and the way results were combined.
+
+| Algorithm | Data each tree sees | How splits are chosen | Combined by |
+|:--------------|:--------------|:--------------------|:-----------------|
+| CART | all of it | greedy: maximise gain | nothing --- one tree |
+| Random forest | a bootstrap re-sample | greedy, over a random feature subset | averaging |
+| XGBoost | all of it | greedy: maximise structure-score gain | summing |
+
+::: callout-important
+BART breaks the pattern. It does not choose splits greedily at all, and it is neither bagging nor boosting. It also gives us the one thing none of yesterday's methods can: an honest interval around a prediction.
+:::
+
+## R Packages for this Lecture
+
+::::: columns
+::: {.column width="50%"}
+- `mlbench` --- the Boston Housing data
+- `tidymodels` --- the whole modelling workflow
+- `tidyverse` --- data manipulation and graphics
+:::
+
+::: {.column width="50%"}
+- `future` --- parallel tuning
+- `dbarts` --- Bayesian Additive Regression Trees
+:::
+:::::
+
+# BART Preliminaries {background-color="#40666e"}
+
+## What Is BART and Why Should We Care?
+
+-   BART = [B]{.underline}ayesian [A]{.underline}dditive [R]{.underline}egression [T]{.underline}rees [@chipman2010Bart; @tan2019Bayesian].
+
+-   It is a technique that builds different regression trees and adds the results.
+-   It builds on a Bayesian framework.
+-   Among the key benefits of BART are:
+    -   Flexible specification of $f(.)$.
+    -   Automatic detection of interactions and non-linear effects.
+    -   Probabilistic predictions.
+    -   Measures of uncertainty.
+
+## The Key Components
+
+1.  Regression trees:
+    -   We make a series of binary decisions that split the data into ever smaller groups, with each group receiving an average.
+    -   This is akin to other greedy learners.
+2.  Sum of trees:
+    -   BART uses many trees, each making its own prediction.
+    -   The final prediction is the sum of these individual predictions.
+    -   This is akin to boosted trees.
+3.  Bayesian:
+    -   BART incorporates prior distributions for the parameters and updates these to posteriors based on the data.
+    -   The update is based on MCMC = **Markov Chain Monte Carlo**.
+
+## Is BART Bagging or Boosting? {.smaller}
+
+Neither, but it borrows from both. The three differ on *what each tree sees*, *how splits are picked*, and *what keeps each tree weak*.
+
+::: {style="font-size: 80%"}
+|  | Bagging / RF | Boosting | BART |
+|----------------|----------------|----------------|------------------------|
+| Data each tree sees | a bootstrap re-sample | all of it | all of it |
+| How trees relate | independent, fitted in parallel | sequential; each fits the residual left by its predecessors | additive; **all** trees refitted repeatedly by backfitting |
+| How splits are chosen | greedy: maximise gain over a random feature subset | greedy: maximise gain | **drawn from a prior**, then accepted or rejected by Metropolis--Hastings |
+| Trees revisited later? | no | no --- frozen once added | **yes** --- every tree, every sweep |
+| What keeps a tree weak | nothing; trees grow deep | learning rate / shrinkage | the prior on $\mu_{ji}$ and on depth |
+| Final prediction | average over trees | sum over trees | sum over trees, averaged over posterior draws |
+:::
+
+## Where the Boosting Analogy Holds---and Breaks {.smaller}
+
+-   **Holds.** BART fits tree $j$ to the partial residual $r_j = y - \sum_{k \neq j} g(\boldsymbol{x};T_k,M_k)$. That is the boosting move exactly: explain what the other trees have left over. @chipman2010Bart call their algorithm "similar in spirit to the gradient boosting approach."
+
+-   **Holds.** The prior $\mu_{ji} \sim {\cal N}(\mu_\mu, \sigma_\mu)$ shrinks each tree's contribution toward zero. @chipman2010Bart describe $\sigma_\mu$ as "the counterpart of the shrinkage parameter in Friedman's gradient boosting"---both "weaken" the individual trees.
+
+-   **Breaks---and this is the important one.** Boosting is *forward stagewise*: a tree is fitted once, by greedy optimisation, and never touched again. BART fixes $m$ in advance and revisits **every** tree on every sweep. Fit is continually reallocated among trees.
+
+-   **Breaks.** Splits are not optimised at all. The feature and the cut-point are *proposed from the prior* (usually uniform) and then accepted or rejected on the marginal likelihood. There is no search for the best split anywhere in BART.
+
+::: notes
+So the intuition that BART "rubs up against boosting" is right, but it is the additive residual structure that does the rubbing, not the way splits are decided. Split selection is where BART is furthest from both bagging and boosting.
+:::
+
+# BART Mechanics {background-color="#40666e"}
+
+## Sum of Trees
+
+::::: columns
+::: {.column width="50%"}
+![](Images/bart1.png){fig-align="center"}
+:::
+
+::: {.column width="50%"}
+-   The sum of trees is
+
+    $$
+    y = \phi(\boldsymbol{x}) + \varepsilon = \sum_{j=1}^m g(\boldsymbol{x};T_j,M_j) + \text{error}
+    $$
+
+    where $T_j$ is the $j$th binary tree structure and $M_j = \{ \mu_{j1}, \cdots, \mu_{jb_j} \}$ is the vector of terminal node parameters.
+
+-   E.g.,
+
+    -   An instance with features $(50,80,100)$ receives $\mu_{11} + \mu_{22}$ as the prediction.
+:::
+:::::
+
+## Tree Initialization
+
+-   Single root nodes are created:
+
+    -   We take the unconditional mean of $Y$, i.e., $\mathbb{E}[Y]$.
+    -   We divide this over the $m$ trees we plan to construct.
+    -   The estimator is $\hat{\mu}_{j1} = \frac{\bar{y}}{m}$.
+
+-   Getting the residual with respect to a subset of trees:
+    -   $r_j = y - \sum_{k \neq j} g(\boldsymbol{x}; T_k, M_k)$
+
+::: notes
+We do not consider $T_j$ for the residual because it would bias things to the status quo, i.e., not changing $T_j$ at all.
+:::
+
+## Making Proposals
+
+-   Imagine we started with $T_1$ and computed $r_1$.
+-   We now propose a new tree structure, $T_1^*$. In general, that structure can
+    -   add new splits
+    -   remove existing splits
+-   We now compute the probability of accepting $T_1^*$, taking into consideration:
+    -   The residual with respect to the status quo: $r_1|T_1$
+    -   The residual with respect to the proposal: $r_1|T_1^*$
+-   If $T_1^*$ is accepted, it becomes the new tree structure; otherwise, we stay with $T_1$.
+-   We repeat the process for a randomly selected second tree.
+
+## How a Tree Is Modified: Four Moves {.smaller}
+
+A proposal $T_j^*$ is generated from $T_j$ by one of four moves [@chipman2010Bart]:
+
+| Move | What it does | Prob. | Changes size? |
+|---------------|--------------------------|:-------------:|:-------------:|
+| **GROW** | split a terminal node in two | 0.25 | $+1$ leaf |
+| **PRUNE** | collapse a pair of terminal siblings back into their parent | 0.25 | $-1$ leaf |
+| **CHANGE** | replace the splitting rule at an internal node | 0.40 | no |
+| **SWAP** | exchange the rules of a parent and a child | 0.10 | no |
+
+-   GROW and PRUNE are proposed **equally often**.
+
+-   Half of all proposals (CHANGE + SWAP) leave the tree's size alone and only move *where* it splits.
+
+::: notes
+Splits do get taken away. Three points are important here: (1)  **PRUNE is proposed as often as GROW** (0.25 each). Removal is built into the sampler on equal footing with addition. (2)  **At convergence, pruning must exactly balance growing.** Each accepted GROW adds one leaf, each accepted PRUNE removes one. If the two did not balance, average tree size would drift and the chain would not be stationary. (3) **But there is usually very little to prune.** The depth prior $\alpha/(1+d)^\beta$ with the defaults $\alpha = 0.95, \beta = 2$ keeps trees to a handful of splits. A single-node tree has no sibling pair at all, so PRUNE cannot even be applied to it.
+:::
+
+## Visual Representation of Iterations
+
+![](Images/bart2.png){fig-align="center"}
+
+## Prior for Additive Structure
+
+-   Given $m$ trees, the prior is
+
+    $$
+    p([T_1,M_1], \cdots, [T_m,M_m], \sigma)
+    $$
+
+    with dispersion parameter $\sigma$.
+
+-   If we assume the trees are constructed independently, then we may write this as
+
+    $$
+    p(\sigma) \prod_{j=1}^m p(T_j,M_j|\sigma) = p(\sigma) \left[ \prod_{j=1}^m p(M_j|T_j) p(T_j) \right]
+    $$
+
+::: notes
+$\sigma$ is the standard deviation associated with $\varepsilon$.
+:::
+    
+## Prior for Additive Structure Cont'd
+
+We can also write this as
+  $$
+  p(\sigma) \left[ \prod_{j=1}^m \left \{ \prod_{i=1}^{b_j} p(\mu_{ji}|T_j) \right \} p(T_j) \right]
+  $$
+
+## Elaborating on the Priors
+
+-   $\mu_{ji}|T_j \cal {\sim N}(\mu_{\mu},\sigma_{\mu})$.
+-   $\sigma^2 \sim {\cal IG} \left( \frac{\nu}{2}, \frac{\nu \lambda}{2} \right)$.
+
+## Elaborating on the Priors Cont'd
+
+-   For $T_j$ we consider several components:
+    -   The probability of a node split at depth $d$: $\frac{\alpha}{(1 + d)^{\beta}}$ with $\alpha \in [0,1]$ and $\beta > 0$
+        -   Higher $\alpha$ increases the likelihood of a split
+        -   Higher $\beta$ reduces the number of terminal nodes
+    -   The probability of selecting $X_p$ for a split.
+        -   Often uniform.
+        -   This can be changed.
+    -   The probability of selecting cutoff $\tau_p$ on $X_p$, which is typically uniform over the range of $X_p$.
+
+## The Algorithm in Full {.smaller}
+
+Everything so far --- initialisation, proposals, the four moves, the priors --- assembled into one loop.
+
+```{.default code-line-numbers="|2-5|7|8|9-10|11-13|14-16|17-18|19-20|22|23|25"}
+FUNCTION BART(data, m trees, N sweeps, burn-in B):
+    FOR j = 1 TO m DO                     # initialise: m stumps
+        T_j ← single root node
+        M_j ← { ȳ / m }                   # share the mean across trees
+    σ ← initial value
+
+    FOR s = 1 TO N DO                     # one sweep = one posterior draw
+        FOR j = 1 TO m DO                 # EVERY tree, EVERY sweep
+            r_j ← y − Σ_{k≠j} g(x; T_k, M_k)  # what the OTHER m−1
+                                              # trees leave unexplained
+            T*_j ← apply one move to T_j:
+                     GROW 0.25   PRUNE 0.25
+                     CHANGE 0.40 SWAP 0.10
+            α ← min(1,  p(r_j|T*_j,σ) · p(T*_j) · q(T_j|T*_j)
+                        ─────────────────────────────────────  )
+                        p(r_j|T_j ,σ) · p(T_j)  · q(T*_j|T_j)
+            WITH PROBABILITY α: T_j ← T*_j    # accept
+            OTHERWISE:          keep T_j      # reject
+            FOR EACH leaf i OF T_j DO
+                μ_ji ~ p(μ | r_j, T_j, σ)     # Normal, conjugate
+        END FOR
+        σ ~ p(σ | y − Σ_j g(x; T_j, M_j))     # inverse gamma, conjugate
+        IF s > B THEN store f⁽ˢ⁾(·) = Σ_j g(·; T_j, M_j)
+    END FOR
+    RETURN the collection { f⁽ˢ⁾ } --- not one model, but N of them
+```
+
+::: notes
+p(r_j | T, σ) is the *integrated* likelihood: the leaf values M_j have been
+marginalised out. That is what lets GROW and PRUNE change the number of leaves
+without needing reversible-jump MCMC (Chipman et al. 2010).
+:::
+
+
+## Four Things to Notice {.smaller}
+
+::::: columns
+::: {.column width="52%"}
+1.  **The tree loop sits inside the sweep loop.** Boosting fits tree $j$ once and moves on; BART returns to every tree on every sweep, for thousands of sweeps. That single indentation is the whole difference.
+
+2.  **There is no `argmax` anywhere.** Compare with the CART and XGBoost searches, which both ended in "keep the best". Here a split is *proposed* from the prior and then accepted or rejected. Nothing is optimised.
+
+3.  **The residual excludes tree $j$ itself.** Otherwise the comparison would be rigged in favour of leaving $T_j$ exactly as it is.
+:::
+
+::: {.column width="48%"}
+4.  **The return value is a sample of models**, not a model.
+
+    $$\hat{y}(\boldsymbol{x}) = \frac{1}{N-B}\sum_{s>B} f^{(s)}(\boldsymbol{x})$$
+
+    and a 90% interval is simply the 5th and 95th percentiles of $\{f^{(s)}(\boldsymbol{x})\}$.
+
+::: callout-important
+This is where yesterday's intervals could not have come from. CART returns one tree; the forest returns $R$ trees; XGBoost returns $m$ trees. BART returns $N$ whole *ensembles*, and the spread among them **is** the uncertainty.
+:::
+:::
+:::::
+
+# BART in Practice {background-color="#40666e"}
+
+## Revisiting Boston
+
+```{r}
+#| echo: true
+#| message: false
+library(mlbench); library(tidymodels); library(tidyverse)
+tidymodels_prefer()
+
+data("BostonHousing2")
+boston <- BostonHousing2 |>
+  mutate(chas = as.numeric(chas) - 1) |>
+  select(-town, -tract, -lon, -lat, -medv)
+
+set.seed(821)                      # same seed as yesterday
+boston_split <- initial_split(boston, prop = 0.8, strata = cmedv)
+train_data   <- training(boston_split)
+test_data    <- testing(boston_split)
+set.seed(1923)
+cv_folds <- vfold_cv(train_data, v = 5)
+```
+
+::: notes
+We keep the same seeds as yesterday to allow for comparisons between BART and other algorithms
+:::
+
+## BART on the Boston Data
+
+::: panel-tabset
+### Model
+
+```{r}
+#| echo: true
+#| message: false
+library(dbarts)
+
+bart_recipe <- recipe(cmedv ~ ., data = train_data) |>
+  step_normalize(all_numeric_predictors())
+
+bart_spec <- parsnip::bart(
+    trees                    = tune(),
+    prior_terminal_node_coef = tune(),
+    prior_terminal_node_expo = tune()
+  ) |>
+  set_engine("dbarts") |>
+  set_mode("regression")
+
+bart_flow <- workflow() |>
+  add_recipe(bart_recipe) |>
+  add_model(bart_spec)
+```
+
+### Tuning
+
+```{r}
+#| echo: true
+#| message: false
+library(future)
+bart_param <- extract_parameter_set_dials(bart_spec)
+plan(multisession)
+set.seed(123)
+bart_tune <- tune_bayes(
+  bart_flow,
+  resamples = cv_folds,
+  param_info = bart_param,
+  initial   = 10,
+  iter      = 15,
+  metrics   = metric_set(rmse, rsq),
+  control   = control_bayes(verbose = TRUE, no_improve = 8)
+)
+bart_best <- select_best(bart_tune, metric = "rmse")
+bart_best
+plan(sequential)
+```
+
+### Final Fit
+
+```{r}
+#| echo: true
+bart_final <- bart_flow |>
+  finalize_workflow(bart_best) |>
+  fit(data = train_data)
+```
+
+### Performance
+
+```{r}
+#| echo: true
+bart_final |>
+  predict(test_data) |>
+  bind_cols(test_data) |>
+  metrics(truth = cmedv, estimate = .pred)
+```
+:::
+
+::: notes
+Grid deliberately small (12 points, 5 folds). Each candidate runs a full MCMC,
+so this is far slower per point than yesterday's algorithms.
+:::
+
+## What Only BART Gives You {.smaller}
+
+Every prediction comes with a **posterior distribution**, not just a point.
+
+```{r}
+#| echo: true
+#| message: false
+pred_int <- bart_final |>
+  predict(test_data, type = "pred_int", level = 0.90) |>
+  bind_cols(predict(bart_final, test_data)) |>
+  bind_cols(test_data |> select(cmedv))
+
+pred_int |>
+  arrange(.pred) |>
+  mutate(rank = row_number()) |>
+  ggplot(aes(x = rank, y = .pred)) +
+  geom_ribbon(aes(ymin = .pred_lower, ymax = .pred_upper),
+              fill = "#31688EFF", alpha = 0.25) +
+  geom_point(aes(y = cmedv), alpha = 0.5, size = 1) +
+  labs(x = "Test instances, ordered by prediction",
+       y = "Median value", title = "90% posterior predictive intervals") +
+  theme_minimal(base_size = 14)
+```
+
+::: notes
+Ask the room: where are the intervals widest, and why? That is the question a random forest cannot answer.
+:::
+
+## Final Scoreboard {.smaller}
+
+| Algorithm | Test RMSE | Test $R^2$ | What it bought us |
+|:--------------|:---------|:---------|:-----------------------------|
+| CART | | | interpretability --- you can read the tree |
+| Random forest | | | variance reduction, almost free |
+| XGBoost | | | usually the best point prediction |
+| BART | | | uncertainty, and no tuning of split rules |
+
+::: callout-note
+## The honest summary
+
+On tabular regression of this size the three ensembles will land close together. Choose on what you need --- a number, an explanation, or an interval --- not on a leaderboard.
+:::
+
+# Exercise {background-color="#40666e"}
+
+## Living with Uncertainty {.smaller}
+
+::: callout-tip
+## Task
+
+Using the [Communities and
+crime](https://archive.ics.uci.edu/dataset/183/communities+and+crime) data and the same features you used yesterday, fit a BART. Extract the 90% prediction intervals on the test set. What fraction of true values fall inside the interval? Is it close to 90%? How does the performance compare to CART, RF, and XGBoost?
+:::
+
+## Debrief
+
+- How well di the model perform?
+- What do you notice about the credible intervals?
+
+
+## References
