@@ -925,10 +925,10 @@ library(future)
 rf_param <- extract_parameter_set_dials(rf_spec) |>
   finalize(train_data)
 
-set.seed(20)
-
 # SMBO-Bayes fine-tuning
 plan(multisession)
+
+set.seed(20)
 rf_tune <- tune_bayes(
   rf_flow,
   resamples = cv_folds,
@@ -939,8 +939,12 @@ rf_tune <- tune_bayes(
   control   = control_bayes(verbose = TRUE, no_improve = 8)
 )
 rf_best <- select_best(rf_tune, metric = "rmse")
-rf_best
 plan(sequential)
+```
+
+### Result
+```{r}
+rf_best
 ```
 
 ### Final Fit
@@ -1062,6 +1066,252 @@ importance of the various features using permutation.
 
 - How does performance of the RF compare to the CART?
 - Which features are doing the heavy lifting?
+
+# adaBoost {background-color="#40666e"}
+
+## adaBoost as an Illustration
+
+-   Introduced by @freund1995DecisionTheoretic.
+
+-   A 2-class classifier that re-weights the data in successive steps.
+
+-   Algorithm
+
+    1.  Start by weighting all training samples equally.
+
+    2.  Fit a tree and record errors.
+
+    3.  Give the falsely predicted samples extra weight.
+
+    4.  Fit another tree.
+
+    5.  Repeat the process.
+
+    6.  Take the predictions from each run and generate weighted predictions, where the weights depend on the quality of the predictions from the individual trees.
+
+## Some Hypothetical Data
+
+```{r}
+#| echo: false
+#| message: false
+library(kableExtra)
+library(tidyverse)
+df <- data.frame( x1 = c(3.648, 2.613, 2.363, 4.933, 3.776, 8.674, 5.862,
+                         8.985, 7.467, 4.436),
+                  x2 = c(2.997, 4.459, 1.507, 1.299, 3.157, 2.123, 0.004,
+                         1.768, 0.187, 0.823),
+                  y = c(rep(0, 5), rep(1, 5)) )
+df$y <- factor(df$y, labels = c("0", "1"))
+df %>% kbl() %>%
+  kable_styling(bootstrap_options = "striped",
+                stripe_color = "gray",
+                full_width = F, font_size = 20)
+```
+
+## A First Split
+
+::::: columns
+::: {.column width="50%"}
+```{r}
+#| echo: false
+ggplot(df, aes(x = x1, y = x2, col = y)) +
+  geom_point(size = 5) +
+  geom_vline(xintercept = 5) +
+  scale_color_manual(values = c("#E69F00", "#56B4E9")) +  # Colorblind-friendly palette
+  labs(title = "Scatter Plot of x1 vs x2",
+       subtitle = "Colored by Category y with Vertical Line at x1 = 5",
+       x = "X1",
+       y = "X2",
+       color = "Category") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 16), # Larger text for readability
+    plot.title = element_text(hjust = 0.5),  # Center the title
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+```
+:::
+
+::: {.column width="50%"}
+-   We make an error for the last instance.
+
+-   The next split should avoid making this error.
+
+-   How do we do this? Through weighting:
+
+    -   Up-weight the incorrectly predicted instance
+
+    -   It now carries more weight in the next learner
+:::
+:::::
+
+## Weighting Procedure
+
+-   Set the initial weights to $w_i = 1/n_1$ $\forall i$.
+
+-   Apply the algorithm and obtain the prediction errors $m_i \in \{ 0,1 \}$.
+
+-   Obtain the weighted prediction errors
+
+    $$
+    e_i = \frac{w_i m_i}{\sum_i w_i}
+    $$
+
+-   Define the total error as $e_t = \sum_i e_i$.
+
+-   Define the stage as
+
+    $$
+    s = \ln \left( \frac{1 - e_t}{e_t} \right)
+    $$
+
+## Weighting Procedure Cont'd
+
+-   Generate updated weights $w_i^* = w_i \exp (s \cdot e_i)$.
+
+-   Move to the next learner and repeat.
+
+## Weighting Illustrated
+
+```{r}
+#| echo: false
+df$w0 <- 1/10
+df$m <- c(rep(0,9), 1)
+df$e <- (df$w0 * df$m)/sum(df$w0)
+df$e_tot <- sum(df$e)
+df$stage <- log((1 - df$e_tot)/df$e_tot)
+df$w1 <- df$w0 * exp(df$stage * df$e)
+df %>%
+  kbl(digits = 3) %>%
+  kable_styling(bootstrap_options = "striped",
+                stripe_color = "gray",
+                full_width = F,
+                font_size = 20)
+```
+
+## Fitting Another Stub
+
+::::: columns
+::: {.column width="50%"}
+```{r}
+#| echo: false
+ggplot(df, aes(x = x1, y = x2, col = y)) +
+  geom_point(size = 5) +
+  geom_hline(yintercept = 2.3) +
+  scale_color_manual(values = c("#E69F00", "#56B4E9")) +  # Colorblind-friendly palette
+  labs(title = "Scatter Plot of x1 vs x2",
+       subtitle = "Colored by Category y with Vertical Line at x2 = 2.3",
+       x = "X1",
+       y = "X2",
+       color = "Category") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 16), # Larger text for readability
+    plot.title = element_text(hjust = 0.5),  # Center the title
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+```
+:::
+
+::: {.column width="50%"}
+```{r}
+#| echo: false
+df2 <- df %>%
+  select(x1,x2,y,w1)
+df2$m <- 0
+df2[3,5] <- 1
+df2[4,5] <- 1
+df2$e <- (df2$w1 * df2$m)/sum(df2$w1)
+df2$e_tot <- sum(df2$e)
+df2$stage <- log((1 - df2$e_tot)/df2$e_tot)
+df2$w2 <- df2$w1 * exp(df2$stage * df2$e)
+df2 %>%
+  kbl(digits = 3) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,
+                font_size = 15)
+```
+:::
+:::::
+
+## And Another One
+
+::::: columns
+::: {.column width="50%"}
+```{r}
+#| echo: false
+ggplot(df, aes(x = x1, y = x2, col = y)) +
+  geom_point(size = 5) +
+  geom_hline(yintercept = 1) +
+  scale_color_manual(values = c("#E69F00", "#56B4E9")) +  # Colorblind-friendly palette
+  labs(title = "Scatter Plot of x1 vs x2",
+       subtitle = "Colored by Category y with Vertical Line at x2 = 1",
+       x = "X1",
+       y = "X2",
+       color = "Category") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 16), # Larger text for readability
+    plot.title = element_text(hjust = 0.5),  # Center the title
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+```
+:::
+
+::: {.column width="50%"}
+```{r}
+#| echo: false
+df3 <- df2 %>%
+  select(x1,x2,y,w2)
+df3$m <- 0
+df3[6,5] <- 1
+df3[8,5] <- 1
+df3$e <- (df3$w2 * df3$m)/sum(df3$w2)
+df3$e_tot <- sum(df3$e)
+df3$stage <- log((1 - df3$e_tot)/df3$e_tot)
+df3$w3 <- df3$w2 * exp(df3$stage * df3$e)
+df3 %>%
+  kbl(digits = 3) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,
+                font_size = 15)
+```
+:::
+:::::
+
+## Final Prediction
+
+-   Let $\hat{y}^* = 2\hat{y} - 1$, where $\hat{y} = \{0, 1\}$.
+
+-   For $R$ fitted learners, the prediction for sample $i$ is
+
+    $$
+    \hat{y}_i^f = \sum_{r=1}^R s_r \cdot \hat{y}_{ir}^*
+    $$
+
+-   If $\hat{y}_i^f \geq 0$ then we predict class label 1, otherwise class label 0.
+
+## Illustration
+
+```{r}
+#| echo: false
+df4 <- df %>%
+  select(x1, x2, y)
+df4$psi1 <- ifelse(df4$x1 <= 5, 0, 1)
+df4$psi2 <- ifelse(df4$x2 <= 2.3, 1, 0)
+df4$psi3 <- ifelse(df4$x2 <= 1, 1, 0)
+df4$stage1 <- 2.197
+df4$stage2 <- 1.417
+df4$stage3 <- 1.452
+df4$psi_final <- (2 * df4$psi1 - 1) * df4$stage1 +
+  (2 * df4$psi2 - 1) * df4$stage2 +
+  (2 * df4$psi3 - 1) * df4$stage3
+df4$pred_label <- ifelse(df4$psi_final>=0, 1, 0)
+df4 %>%
+  kbl(digits = 3) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,
+                font_size = 15)
+```
+
+We have achieved perfect prediction.
 
 # Gradient Boosting and XGBoost {background-color="#40666e"}
 

@@ -388,7 +388,7 @@ ggplot(mreg_df, aes(x = x1, y = x2), col = "#31688EFF",
 - We apply the trained biases and weights and use that to make predictions in the test set.
 - Those predictions are compared to the actual target values in the test set.
 - Common performance metrics are:
-  - RMSE: $P = \sqrt{\sum_{i=1}^{n_2} (y_i - \hat{y}_i)^2}$.
+  - RMSE: $P = \sqrt{\frac{1}{n_2} \sum_{i=1}^{n_2} (y_i - \hat{y}_i)^2}$.
   - R-squared: $R^2 = \text{cor}_{y_i,\hat{y}_i \in \text{test set}}^2$.
 
 # Building Our First Workflow Together {background-color="#40666e"}
@@ -561,18 +561,27 @@ housing_wf <- workflow() |>
 housing_fit <- fit(housing_wf, train_df)
 ```
 
-### Results 1
+### Results I
 
 ```{r}
 #| echo: true
 tidy(housing_fit)
 ```
 
-### Results 2
+### Results II
 
 ```{r}
 #| echo: true
 glance(housing_fit)
+```
+
+### Results III
+
+```{r}
+#| echo: true
+# Box-Cox parameters
+prepped <- extract_recipe(housing_fit)
+tidy(prepped, number = 1)
 ```
 :::
 
