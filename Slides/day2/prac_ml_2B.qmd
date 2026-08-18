@@ -1,6 +1,6 @@
 ---
-title: MACHINE LEARNING FOR SURVEY RESEARCH I
-subtitle: Missing Data
+title: INTERPRETABLE MACHINE LEARNING
+subtitle: Partial Dependence Plots, Breakdown Values, and SHAP values
 author:
   - name: Marco R. Steenbergen
     orcid: 0000-0002-5709-5165
@@ -24,803 +24,414 @@ editor:
     wrap: 72
 ---
 
-## Plan for the Day
+# Preliminaries {background-color="#40666e"}
 
-| Element                | Content                                  |
-|:-----------------------|:-----------------------------------------|
-| **Part 1** (Morning)   | Missing data                             |
-|                        | *Exercise 1 + Debrief*                   |
-| **Part 2** (Afternoon) | Response styles                          |
-|                        | *Exercise 2 + Debrief*                   |
-| **Part 3**             | Multilevel ML for cross-national surveys |
-|                        | *Exercise 3 + Debrief*                   |
+## Overview
 
-## R Packages for this Lecture
+-   What is interpretable machine learning (IML)?
 
-Beyond packages you have installed already, please add
+-   Partial dependence plots?
 
-- `mice` for missing data imputation with chained equations
-- `miceRanger` for implementing multiple imputation
-- `missForest` for single RF-based imputations
-- `tidymodels` for imputation inside a recipe
-- `sbart` for sequential BART imputation --- theory only, the package is
-  no longer maintained (see the caveat at the end)
+-   Breakdown plots.
 
-# Basics of Missing Data {background-color="#40666e"}
+-   SHAP values and variable importance.
 
-## The Bane of the Social Scientist's Existence
+## Packages for This Lecture
 
-- Missing data are a common occurrence in social science data analysis.
-- They are common in survey research due to **non-response**.
-- In archival work, they occur as well because reporting is not always
-  complete.
+-   `bonsai`
 
-## Missing Data Patterns {.smaller}
+-   `DALEXtra`
 
-Two different questions, often conflated:
+-   `forcats`
 
-- **How much** is missing, and **where**? --- the plots on the next
-  slide.
-- **In what configuration** are the holes arranged? --- the *pattern*.
+-   `mlbench`
 
-| Pattern | Shape | Consequence |
-|:------------------|:---------------------|:------------------------------|
-| **Monotone** | The variables can be ordered so that if $X_j$ is missing, everything after it is too --- classic panel attrition | Can be imputed **sequentially**, one variable at a time, in a single pass |
-| **Non-monotone** | Holes scattered arbitrarily; no such ordering exists | We must **cycle** repeatedly through the variables until things settle |
+-   `tidymodels`
 
-::: callout-note
-This is why MICE is called *chained* equations, and why it needs `maxit`
-iterations at all. On a monotone pattern the chain would converge in one
-sweep. Survey and archival data are almost always non-monotone.
+-   `tidyverse`
+
+# What Is IML? {background-color="#40666e"}
+
+## Motivation
+
+> "if the users do not trust a model or a prediction, they will not use it." @ribeiro2016Why [p. 1]
+
+## Global and Local Foci
+
+-   Global interpretability refers to the totality of a population.
+
+-   Local interpretability concerns prediction in a specific instance.
+
+## Different Approaches
+
+-   DALEX [@biecek2018DALEX]
+
+-   IML = Interpretable Machine Learning [@molnar2018Iml]
+
+-   LIME = Local Interpretable Model-agnostic Explanations [@ribeiro2016Why]
+
+## DALEX
+
+## DALEX
+
+::::: columns
+::: {.column width="50%"}
+![](Images/dalex.png){fig-align="center"}
+
 :::
 
-## Reasons for Missing Data
+::: {.column width="50%"}
+-   DALEX = [D]{.underline}escriptive M[a]{.underline}chine [L]{.underline}earning [Ex]{.underline}planations.
 
-:::: panel-tabset
+-   DALEXtra = DALEX integration with `tidymodels`.
+
+-   A suite of different tools, including:
+
+    1.  Partial dependence plots for global interpretation.
+
+    2.  Breakdown plots for local interpretation.
+
+    3.  SHAP-values for feature importance.
+:::
+:::::
+
+# Partial Dependence Plots {background-color="#40666e"}
+
+## What Is a Partial Dependence Plot?
+
+-   A partial dependence plot (PDP) visualizes the relationship between a specific feature and a target, while averaging out the effects of the remaining features.
+
+-   This is based on a consideration of all training or test instances.
+
+## How Is the PDP Constructed?
+
+1.  Let $f(.)$ be the function that we trained.
+
+2.  Choose $X_j$ as the feature of interest. Create a grid of values ${\cal G} = \{ g_1, g_2, \cdots, g_m \}$ spanning the range of $X_j$.
+
+## How Is the PDP Constructed? Cont'd
+
+3.  For each $g \in {\cal G}$,
+
+    1.  Replace the $j$th feature in all instances with $g$; call the remaining features $\boldsymbol{x}_i^*$.
+
+    2.  Predict the outcome using the modified data: $\hat{y}_i^{(j)} = f(x_{ij} = g, \boldsymbol{x}_i^*)$.
+
+    3.  Average the predictions over all instances:
+
+        $$
+        \hat{f}_j = \frac{1}{n} \sum_{i=1}^n \hat{y}_i^{(j)}
+        $$
+
+    4.  Plot the results.
+
+## The Boston Housing Prices Once More
+
+::: panel-tabset
+## Comment
+
+-   We fit a random forest to the Boston Housing data.
+
+-   This produces $R$ trees that are aggregated.
+
+-   This aggregate is not so easily interpretable.
+
 ## Data
 
 ```{r}
 #| echo: true
 #| message: false
-# We create a subset of the ESS Round 11 for Switzerland
-# See the codebook (on GitHub) for explanations
-library(haven)
+library(mlbench)
 library(tidyverse)
-ess_raw <-  read_sav("../data/ESS11e04_2.sav", user_na = TRUE)
-ess_ch <- ess_raw |>
-  filter(cntry == "CH") |>
-  select(trstprl, trstlgl, trstplc, trstplt, trstprt, trstep,
-         trstun, hinctnta, lrscale, agea, gndr, eisced,
-         domicil, hincfel, mnactic, rlgdgr, brncntr)
+library(tidymodels)
+tidymodels_prefer()
+data("BostonHousing2")
+df <- BostonHousing2 %>%
+  mutate(chas = as.numeric(chas) - 1) %>%
+  select(-town, -tract, -lon, -lat, -medv)
+set.seed(10)
+housing_split <- initial_split(df, prop = 0.8)
+train <- training(housing_split)
+test <- testing(housing_split)
 ```
 
-## Reasons I
-
-```{r}
-# We look at hinctnta, which has quite a few missing values
-# 1-10 are valid; 77 = "Refusal", 88 = "Don't Know"
-table(ess_ch$hinctnta)
-```
-
-## Reasons II
-
-- There may be different reasons for the two missing responses.
-
-- Refusal = the person does not want to reveal their income; missingness
-  may be due to the value of the variable.
-
-- DK = the person simply cannot remember their income; less likely to be
-  due to the value of the income itself.
-
-## Comment
-
-::: callout-warning
-## Beware
-
-In a moment we will set all missing values to `NA`, losing all
-distinctions between reasons why a response may be missing. Do this only
-after you have gauged the various forms of missingness.
-:::
-::::
-
-## Missing Value Patterns across Variables and Cases
-
-::: panel-tabset
-## Variablesgg_m
+## Flow
 
 ```{r}
 #| echo: true
-#| eval: false
-library(naniar)
-ess_ch <- ess_ch |>
-  mutate(across(where(is.numeric), ~replace(.x, .x %in% c(66, 77, 88, 999, 999), NA)),
-         brncntr = ifelse(brncntr==7, NA, brncntr),
-         eisced = ifelse(eisced==0, NA, eisced)) 
-gg_miss_var(ess_ch, show_pct = TRUE)
-```
-
-## Plot I
-
-```{r}
 #| message: false
-library(naniar)
-ess_ch <- ess_ch |>
-  mutate(across(where(is.numeric), ~replace(.x, .x %in% c(66, 77, 88, 999), NA)),
-         brncntr = ifelse(brncntr==7, NA, brncntr),
-         eisced = ifelse(eisced==0, NA, eisced)) 
-gg_miss_var(ess_ch, show_pct = TRUE)
+library(bonsai)
+rf_recipe <- recipe(cmedv ~ ., data = train)
+rf_spec <- rand_forest(mtry = tune(),
+                       trees = 100,
+                       min_n = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("partykit")
+initial_flow <- workflow() %>%
+  add_recipe(rf_recipe) %>%
+  add_model(rf_spec)
+
 ```
 
-## Cases
+## Tuning
+
+```{r}
+#| echo: true
+rf_para <- extract_parameter_set_dials(rf_spec) %>%
+  finalize(train)
+set.seed(20)
+rf_grid <- grid_latin_hypercube(rf_para,
+                                size = 25,
+                                variogram_range = 0.75,
+                                original = TRUE)
+set.seed(30)
+cv_folds <- vfold_cv(train, v = 10)
+rf_metrics <- metric_set(rsq)
+doParallel::registerDoParallel()
+rf_tune <- initial_flow %>%
+  tune_grid(cv_folds, grid = rf_grid, metrics = rf_metrics)
+rf_best <- select_best(rf_tune)
+```
+
+## Final
+
+```{r}
+#| echo: true
+rf_updated <- finalize_model(rf_spec,
+                             rf_best)
+workflow_new <- initial_flow %>%
+  update_model(rf_updated)
+rf_fit_final <- workflow_new %>%
+  fit(data = train)
+```
+:::
+
+## Bringing in the Robot
+
+::: panel-tabset
+## Dalex
+
+![Dalex Your Friendly Robot](images/robot.png){fig-align="center" width="500"}
+
+## Explainer
+
+```{r}
+#| echo: true
+#| message: false
+library(DALEXtra)
+housing_explainer <- explain_tidymodels(
+  model = rf_fit_final,
+  data = test,
+  y = test$cmedv
+)
+```
+
+## PDP Syntax
 
 ```{r}
 #| echo: true
 #| eval: false
-gg_miss_case(ess_ch, order_cases = TRUE)
+pdp_nox <- model_profile(
+  housing_explainer,
+  variables = "nox",
+  N = NULL
+)
+as_tibble(pdp_nox$agr_profiles) %>%
+  ggplot(aes(`_x_`, `_yhat_`)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_rug(sides = "b") +
+  labs(
+    x = "Pollution",
+    y = "Predicted Median Housing Price",
+    color = NULL
+  ) +
+  theme_bw()
 ```
 
-## Plot II
+## Plot
 
 ```{r}
-gg_miss_case(ess_ch, order_cases = TRUE)
+#| echo: false
+pdp_nox <- model_profile(
+  housing_explainer,
+  variables = "nox",
+  N = NULL
+)
+as_tibble(pdp_nox$agr_profiles) %>%
+  ggplot(aes(`_x_`, `_yhat_`)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_rug(sides = "b") +
+  labs(
+    x = "Pollution",
+    y = "Predicted Median Housing Price",
+    color = NULL
+  ) +
+  theme_bw()
 ```
-
-## Conclusions
-
-- **By variable:** income (`hinctnta`) leads at 14.4%, then trust in the
-  European Parliament (8.5%) and the UN (7.9%). Gender has none. Nothing
-  here looks alarming.
-
-- **By case:** only **976 of 1384** respondents (70.5%) are complete.
-  The holes are spread across *different* people, so a per-variable rate
-  of at most 14.4% compounds into a 29.5% loss for any analysis using
-  all 17.
 :::
 
-## Missing Data Mechanisms
+# Breakdown Plots {background-color="#40666e"}
 
-- Missing data mechanisms describe how the missing data were generated.
+## What Is a Breakdown Plot?
 
-- Let $R$ indicate whether a value is observed, and split the data into
-  what we see, $Y_{obs}$, and what we do not, $Y_{mis}$
-  [@rubin1976Inference].
+-   A breakdown plot breaks a prediction down into contributions of individual features.
 
-- Then:
+-   It does so
 
-  | Mechanism | Formally | In Words |
-  |------------------------|------------------------|------------------------|
-  | [**MCAR**]{.alert} | $P(R \mid Y_{obs}, Y_{mis}) = P(R)$ | Missingness is unrelated to anything, seen or unseen |
-  | [**MAR**]{.alert} | $P(R \mid Y_{obs}, Y_{mis}) = P(R \mid Y_{obs})$ | Missingness depends **only on what we observe** |
-  | [**NMAR**]{.alert} | $P(R)$ still depends on $Y_{mis}$ given $Y_{obs}$ | Missingness depends on the **unseen value itself** |
+    -   Following an additive logic
 
-## Mechanisms and Reasons
+    -   Taking sequencing into account
 
-- On income, "don't know" might be considered MAR.
+## Creating a Breakdown Plot
 
-- However, "refusal" might be more consistentr with MNAR.
+1.  Create a baseline prediction:
 
-## Why Mechanisms Matter
+    $$
+    \phi_i^0 = \mathbb{E}[f(\boldsymbol{x}_i)]
+    $$
 
-- MCAR does not introduce bias, but can introduce inefficiency. Testable
-  but rare in social science research.
+2.  Incremental contributions:
 
-- MAR introduces both bias and inefficiency. However, can be treated
-  with imputation. Not testable.
+    -   Consider a sequence $q$ that orders the features in terms of being added 1st, 2nd, etc.
 
-- MNAR also introduces bias and inefficiency. Here, imputation is
-  ineffective and other solutions are required (e.g., the Heckman sample
-  selection model).
+    -   Let $S$ denote the set of features that have been considered prior to $X_j$.
 
-# Traditional Approaches to Missing Data {background-color="#40666e"}
+    -   Then
 
-## Listwise Deletion
+        $$
+        \phi_j^q = f(S \cup \{j\}) - f(S)
+        $$
 
-- A.k.a. complete case analysis.
+## Creating a Breakdown Plot Cont'd
 
-- We drop all cases that have any missingness on the variables of
-  interest.
+3.  Consider all $Q$ permutations of orderings of features. Then the average contribution across orderings is
 
-- Unbiased under MCAR; generally biased for other mechanisms.
+    $$
+    \phi_j = \frac{1}{Q} \sum_{q=1}^Q \phi_j^q
+    $$
 
-- Exception:
+4.  Plot these averages in a bar chart.
 
-  - In a regression, it gives consistent estimates whenever missingness
-    is conditionally independent of the *outcome* given the covariates.
-  - That includes a class of MNAR mechanisms in which a covariate's
-    missingness depends on its own value [@bartlett2014Improving;
-    @xu2016Sequential].
-
-## Hot-Deck Imputation
-
-- Assuming MAR, we substitute the value of the nearest neighbor in terms
-  of a set of covariates [@ford1983Overview].
-
-- Akin to the k nearest neighbors (kNN) algorithm in ML.
-
-## Parametric Approaches
-
-- EM algorithm [@dempster1977Maximum].
-
-- Bayesian imputation [@rubin1987Multiple].
-
-- MICE = Multiple Imputation with Chained Equations
-  [@vanbuuren2018Flexible].
-
-  - Our focus because it is widely used.
-
-# MICE {background-color="#40666e"}
-
-## Mice Steps in the Imputation Stage
-
-1.  We build a univariate imputation model for each incomplete variable,
-    appropriate for its type.
-
-2.  We cycle through the variables `maxit` times, each pass conditioning
-    on the current imputed values of all the others.
-
-3.  Each imputed value is drawn **with uncertainty**. Observed data are
-    never overwritten.
-
-4.  We repeat the process $M$ times.
-
-    ::: notes
-    \(1\) This is why MICE is called *chained* equations, and why it
-    needs `maxit` iterations at all. On a monotone pattern the chain
-    would converge in one sweep. Survey and archival data are almost
-    always non-monotone. (2) Add noise to the prediction" describes
-    `norm`, the Bayesian linear regression method. The **default for
-    numeric variables is `pmm`**, predictive mean matching, which
-    instead *borrows an observed value* from a donor whose predicted
-    value is close. That is why `pmm` can never impute an impossible
-    value --- no 4.7 on an integer 0--10 trust scale, no negative income
-    decile.
-    :::
-
-## Mice Steps for Analysis
-
-1.  We analyze each of the $m$ imputed data sets separately.
-
-2.  We pool by Rubin's rules: average the estimates, and inflate the
-    variance using both within- and between-data set variation:
-
-    - Let $V_m$ denote the variance of an estimator using imputation
-      data $m$.
-    - The within-variance is the average:
-      $\bar{V} = \frac{1}{M} \sum_m V_m$. This is the variance you would
-      have with complete data.
-    - The between-variance captures the variance between the estimators:
-      $B = \frac{1}{M - 1} \sum_m (\hat{\theta}_m - \bar{\theta})^2$.
-    - The total variance is
-      $$T = \bar{U} + \left( 1 + \frac{1}{M} \right) \cdot B$$
-
-::: notes
-$1/M$ is a finite imputation correction that goes to 0 as
-$M \rightarrow \infty$.
-:::
-
-## The Imputation Model
-
-- The imputation model must be **at least as rich** as the analysis
-  model: it has to contain the outcome, every predictor, and any
-  interaction or nonlinearity you intend to estimate
-  [@vanbuuren2018Flexible].
-
-- Leaving the outcome out of the imputation model biases the very
-  coefficients you are trying to estimate—toward zero.
-
-- **Auxiliary variables** that predict either the missing values or the
-  missingness itself belong in the imputation model even when they are
-  absent from the analysis model. They make MAR more plausible.
-
-## How Many Imputations
-
-- @rubin1987Multiple proposed $2 \leq M \leq 10$ and that suffices for
-  the relative efficiency of the point estimate.
-
-- If the goal is to have a standard error that does not move much under
-  re-imputation, then other rules apply.
-
-- Let $\gamma$ be the **fraction of missing information**. Then
-
-  - @white2011Multiple propose $M = 100 \gamma$.
-  - @vonhippel2020How proposes
-    $M = 1 + 0.5 \cdot \left( \frac{\gamma}{\text{CV}} \right)^2$, where
-    CV = the coefficient of variation. Commonly, CV is set at 0.05.
-
-## How Many Imputations Cont'd
-
-- Define the **relative variance increase** as the ratio of the missing
-  to the complete data part:
-
-  | $$r = \frac{(1 + 1/M) \cdot B}{\bar{U}}$$
-
-- The fraction of missing information is:
-
-  $$\gamma = \frac{r + \frac{2}{\nu + 3}}{r + 1}$$
-
-  where $\nu$ are the degrees of freedom.
-
-## How Many Imputations Cont'd
-
-| Variable   | Fraction Missing | $\bar{U}$ |      $B$ |      $T$ |   $r$ | $\gamma$ |
-|------------|-----------------:|----------:|---------:|---------:|------:|---------:|
-| Income     |             14.4 |   0005503 | 0.000138 | 0.000702 | 0.276 |    0.226 |
-| Left-Right |              7.2 |  0.000641 | 0.000165 | 0.000822 | 0.283 |    0.230 |
-
-Per @vonhippel2020How,
-$M = 1 + 0.5 \cdot \left( \frac{0.230}{0.05} \right)^2 \approx 12$.
-
-## MICE with ESS
+## Illustration
 
 ::: panel-tabset
-### Recoding
+## Selection
 
 ```{r}
 #| echo: true
-# An absolute mess because of our use of haven---it adds labels that other packages do not
-# understand. Can be bypassed if you do not care about # reasons and use rio instead.
-num_vars <- c("trstprl","trstlgl","trstplc","trstplt","trstprt","trstep",
-              "trstun","hinctnta","lrscale","agea","rlgdgr")
-to_num <- function(x) replace(zap_labels(x), is.na(x), NA_real_)
-work <- ess_ch |>
-  mutate(
-    across(all_of(num_vars), to_num),
-    
-    eisced = case_match(to_num(eisced),
-                        1 ~ "I", 2 ~ "II", 3 ~ "IIIb", 4 ~ "IIIa",
-                        5 ~ "IV", 6 ~ "V1", 7 ~ "V2", 55 ~ "Other",
-                        .ptype = factor(levels = c("I","II","IIIb","IIIa","IV","V1","V2","Other"))),
-    
-    hincfel = case_match(to_num(hincfel),
-                         1 ~ "Comfortable", 2 ~ "Cope", 3 ~ "Difficult", 4 ~ "Very Difficult",
-                         .ptype = factor(levels = c("Comfortable","Cope","Difficult","Very Difficult"),
-                                         ordered = TRUE)),
-    
-    domicil = case_match(to_num(domicil),
-                         1 ~ "Big City", 2 ~ "Suburb", 3 ~ "Town", 4 ~ "Country Village", 5 ~ "Farm",
-                         .ptype = factor(levels = c("Big City","Suburb","Town",
-                                                    "Country Village","Farm"))),
-    
-    mnactic = case_match(to_num(mnactic),
-                         1 ~ "Paid Work", 2 ~ "Education", 3 ~ "Unemployed and Looking",
-                         4 ~ "Unemployed Not Looking", 5 ~ "Disabled", 6 ~ "Retired",
-                         7 ~ "Military Service", 8 ~ "Housework", 9 ~ "Other",
-                         .ptype = factor(levels = c("Paid Work","Education","Unemployed and Looking",
-                                                    "Unemployed Not Looking","Disabled","Retired",
-                                                    "Military Service","Housework","Other"))),
-    
-    brncntr = case_match(to_num(brncntr),
-                         1 ~ "Yes", 2 ~ "No", .ptype = factor(levels = c("Yes","No"))),
-    
-    gndr = case_match(to_num(gndr),
-                      1 ~ "Male", 2 ~ "Female", .ptype = factor(levels = c("Male","Female")))
+# We select (for instance) the 1st test sample
+temp1 <- test[1,]
+temp1
+```
+
+## Breakdown
+
+```{r}
+#| echo: true
+bd1 <- predict_parts(explainer = housing_explainer,
+                     new_observation = temp1)
+
+```
+
+## Plot 1
+
+```{r}
+#| echo: true
+#| eval: false
+plot(bd1)
+```
+
+## Plot 2
+
+```{r}
+#| echo: false
+plot(bd1)
+```
+:::
+
+# Shapley Values {background-color="#40666e"}
+
+## A New Approach to Understanding Feature Importance
+
+-   Proposed by @lundberg2017Unified and based on cooperative game theory [@shapley1953Value].
+
+-   Looks at the contribution of a feature depending on the order in which it was added to the model.
+
+-   We create $R$ random orderings and assess
+
+    -   Mean contribution
+
+    -   Range of contributions
+
+-   This can be done locally or globally.
+
+## Local Shap-Values
+
+::: panel-tabset
+## Selection
+
+```{r}
+#| echo: true
+# We select (for instance) the 100th test sample
+temp2 <- test[100,]
+temp2
+```
+
+## Shapley
+
+```{r}
+#| echo: true
+set.seed(1802)
+shap100 <- 
+  predict_parts(
+    explainer = housing_explainer, 
+    new_observation = temp2, 
+    type = "shap",
+    B = 20
   )
 ```
 
-### Imputation
-
-```{r}
-#| echo: true
-library(mice)
-set.seed(2026)
-imp <- mice(work,
-            m       = 10,    
-            maxit   = 10,
-            printFlag = FALSE)
-```
-
-### Diagnostics
+## Plot1
 
 ```{r}
 #| echo: true
 #| eval: false
-# imputed (red) and observed (blue) distributions should look plausible.
-densityplot(imp, ~ trstprl + hinctnta + lrscale + hincfel )
+library(forcats)
+shap100 %>%
+  group_by(variable) %>%
+  mutate(mean_val = mean(contribution)) %>%
+  ungroup() %>%
+  mutate(variable = fct_reorder(variable, abs(mean_val))) %>%
+  ggplot(aes(contribution, variable, fill = mean_val > 0)) +
+  geom_col(data = ~distinct(., variable, mean_val), 
+           aes(mean_val, variable), 
+           alpha = 0.5) +
+  geom_boxplot(width = 0.5) +
+  theme(legend.position = "none") +
+  labs(y = NULL) +
+  theme_bw()
 ```
 
-### Plot
+## Plot2
 
 ```{r}
-densityplot(imp, ~ trstprl + hinctnta + lrscale + hincfel)
-```
-
-### Analysis
-
-```{r}
-#| echo: true
-fit <- with(imp, lm(trstprl ~ hinctnta + lrscale + hincfel + agea + 
-                      brncntr + domicil))
-pooled <- pool(fit)
-summary(pooled, conf.int = TRUE)
-```
-:::
-
-# Imputation Using Machine Learning {background-color="#40666e"}
-
-## Why Machine Learning for Missing Data?
-
-- Non-parametric models.
-
-- Capable of learning complex interplay of covariates, as well as
-  nonlinear patterns.
-
-- Tend to work well even when the amount of missing data is large.
-
-## Theory of Missing Forests
-
-- @stekhoven2012MissForest proposed imputation using random forests.
-
-- Training proceeds as follows:
-
-  1.  Initialize by making simple baseline guesses (mean or mode) and by
-      sorting on the amount of missingness $\Rightarrow$ start with
-      least missing data.
-
-  2.  \(a\) Divide the data in to observed and missing entries on a
-      variable. (b) divide all other variables into predictor rows
-      corresponding to the observed and missing parts of the target. (c)
-      Train the forests on the observed data. (d) Predsict and
-      overwrite.
-
-  3.  Stop when matrix differences stabilize over iterations.
-
-## Random Forest Imputation
-
-:::: panel-tabset
-## Setup
-
-```{r}
-#| echo: true
+#| echo: false
 #| message: false
-library(missForest)
-# Tree-based imputers handle ordered factors awkwardly, so we drop the
-# ordering. missForest also wants a plain data frame, not a tibble.
-work_ml <- work |>
-  mutate(hincfel = factor(hincfel, ordered = FALSE)) |>
-  as.data.frame()
+library(forcats)
+shap100 %>%
+  group_by(variable) %>%
+  mutate(mean_val = mean(contribution)) %>%
+  ungroup() %>%
+  mutate(variable = fct_reorder(variable, abs(mean_val))) %>%
+  ggplot(aes(contribution, variable, fill = mean_val > 0)) +
+  geom_col(data = ~distinct(., variable, mean_val), 
+           aes(mean_val, variable), 
+           alpha = 0.5) +
+  geom_boxplot(width = 0.5) +
+  theme(legend.position = "none") +
+  labs(y = NULL) +
+  theme_bw()
 ```
-
-## Syntax
-
-```{r}
-#| echo: true
-#| eval: false
-set.seed(2026)
-ess_rf_imp <- missForest(work_ml)
-# NRMSE for the numeric block, PFC (proportion falsely classified) for the factors
-ess_rf_imp$OOBerror
-```
-
-## Results
-
-```{r}
-#| message: false
-set.seed(2026)
-ess_rf_imp <- missForest(work_ml)
-ess_rf_imp$OOBerror
-```
-
-## Completed Data
-
-```{r}
-#| echo: true
-ess_rf_complete <- ess_rf_imp$ximp
-sum(is.na(ess_rf_complete))          # 0 --- every hole is filled
-summary(ess_rf_complete$hinctnta)    # note: no longer integer-valued
-```
-
-::: callout-note
-The forest predicts a *conditional mean*, so imputed income deciles come
-out as 6.38, not 6. Contrast `pmm` in `mice`, which borrows an observed
-value from a donor and therefore cannot produce an impossible one.
 :::
-::::
-
-## The Drawback
-
-- Only one imputed data set is returned: no capture of uncertainty.
-
-- @doove2014Recursive and @shah2014Comparison proposed multiple
-  imputation with RFs.
-
-- Currently, the fastest implementation is `miceRanger`.
-
-## Using `miceRanger`
-
-:::: panel-tabset
-## Impute
-
-```{r}
-#| echo: true
-#| message: false
-library(miceRanger)
-set.seed(2026)
-mr <- miceRanger(work_ml,
-                 m       = 12,       # per the von Hippel calculation earlier
-                 maxiter = 5,
-                 valueSelector       = "meanMatch",  # predictive mean matching on RF predictions
-                 meanMatchCandidates = 15,
-                 verbose = FALSE)
-```
-
-::: notes
-This is the slowest chunk in the deck: 12 x 5 x (number of incomplete
-variables) forests. Raise `maxiter` to 10 to match the `mice` call if
-you have the time.
-:::
-
-## Checks
-
-```{r}
-#| echo: true
-#| eval: false
-# Ideally, you should run these checks to assess plausibility and
-# convergence. For the latter, jaggedness is OK--trending is not.
-plotDistributions(mr, vars = c("hinctnta", "lrscale", "trstep", "trstun"))
-plotVarConvergence(mr)   # means/SDs of imputed values across iterations
-plotModelError(mr)       # OOB R^2 per variable --- how well the forests predict
-plotVarImportance(mr)    # which variables drive each imputation model
-```
-
-## Model
-
-```{r}
-#| echo: true
-dat_list <- completeData(mr)
-fits <- lapply(dat_list, function(d)
-  lm(trstprl ~ hinctnta + lrscale + hincfel + agea + brncntr + domicil,
-     data = d))
-pooled_rf <- mice::pool(fits)
-summary(pooled_rf, conf.int = TRUE)
-```
-::::
-
-## Comparing the Three Routes {.smaller}
-
-|   | `mice` (pmm) | `missForest` | `miceRanger` |
-|:-----------------|:-----------------|:-----------------|:-----------------|
-| Data sets returned | $M$ | 1 | $M$ |
-| Uncertainty | Rubin's rules | none | Rubin's rules |
-| Nonlinearity, interactions | only if you specify them | learned | learned |
-| Imputed values | always plausible (donor) | conditional means | plausible (donor) |
-| Cost | low | low | high |
-
-::: callout-note
-Because `hincfel` is now an unordered factor, its contrasts differ from
-the `mice` run above. Compare the numeric coefficients, not the
-`hincfel` block, when you look at the two pooled tables side by side.
-:::
-
-# Imputation Inside a Recipe {background-color="#40666e"}
-
-## Why Bother?
-
-- Everything so far imputes the **whole** data set once and then models
-  it. In a predictive workflow that is a leak: the imputation model has
-  already seen the rows you are about to hold out.
-
-- A `recipes` step is estimated on the *analysis* part of each resample
-  and merely *applied* to the *assessment* part. The imputation is
-  re-learned for every fold, exactly like any other preprocessing.
-
-- It also travels with the fitted model: calling `predict()` on
-  genuinely new data that has holes in it just works.
-
-## What `recipes` Gives You {.smaller}
-
-| Step | Learner | Comment |
-|:-------------------|:-------------------|:-------------------------------|
-| `step_impute_bag()` | bagged CART (`ipred`) | The RF-like option: an ensemble of trees, mixed types, interactions for free |
-| `step_impute_knn()` | Gower-distance kNN | Hot-deck imputation, essentially |
-| `step_impute_linear()` | `lm` | Numeric predictors only |
-| `step_impute_median()`, `step_impute_mode()` | marginal | Fast baseline; ignores everything else |
-
-::: callout-note
-There is no `step_impute_rf()`. Bagged trees are missForest minus the
-random subsetting of predictors at each split --- the same idea, a
-little less decorrelated.
-:::
-
-## A Recipe on the ESS
-
-:::: panel-tabset
-## Split
-
-```{r}
-#| echo: true
-#| message: false
-library(tidymodels)
-tidymodels_prefer()
-
-# recipes imputes predictors, never the outcome: drop those rows first
-ess_ml <- work_ml |> filter(!is.na(trstprl))
-
-set.seed(2026)
-ess_split <- initial_split(ess_ml, prop = 0.8)
-ess_train <- training(ess_split)
-ess_test  <- testing(ess_split)
-```
-
-## Recipe
-
-```{r}
-#| echo: true
-imp_rec <- recipe(trstprl ~ ., data = ess_train) |>
-  step_impute_bag(all_predictors(),
-                  impute_with = imp_vars(all_predictors()),
-                  trees       = 25,
-                  seed_val    = 2026) |>
-  step_dummy(all_nominal_predictors()) |>
-  step_normalize(all_numeric_predictors())
-```
-
-::: callout-warning
-Order matters. Impute **before** `step_dummy()` and `step_normalize()`.
-Imputing after dummying means imputing 0/1 indicator columns, which is
-nonsense.
-:::
-
-## Check
-
-```{r}
-#| echo: true
-imp_prep <- prep(imp_rec)
-baked <- bake(imp_prep, new_data = NULL)
-sum(is.na(baked))     # 0
-```
-
-## Workflow
-
-```{r}
-#| echo: true
-#| message: false
-rf_spec <- rand_forest(trees = 500) |>
-  set_engine("ranger") |>
-  set_mode("regression")
-
-imp_flow <- workflow() |>
-  add_recipe(imp_rec) |>
-  add_model(rf_spec)
-
-set.seed(2026)
-imp_fit <- fit(imp_flow, data = ess_train)
-
-imp_fit |>
-  predict(ess_test) |>
-  bind_cols(ess_test) |>
-  metrics(truth = trstprl, estimate = .pred)
-```
-::::
-
-## The Catch {.smaller}
-
-::: callout-important
-## A recipe does single imputation
-
-`step_impute_bag()` returns **one** completed data set per fold. There
-is no between-imputation variance, so there is nothing to pool by
-Rubin's rules and the standard errors on any coefficient you read off
-are too small.
-:::
-
-- That is perfectly fine when the target is **predictive performance**:
-  RMSE on the assessment set already accounts for imputation error,
-  because the imputation was fit without seeing those rows.
-
-- It is *not* fine when the target is **inference** on a coefficient.
-  For that, impute outside the workflow with `mice` or `miceRanger`, run
-  the workflow $M$ times, and pool by hand.
-
-- Cost: `step_impute_bag()` is the most expensive step in `recipes`.
-  With `v = 10` folds you fit 25 trees x (incomplete variables) x 10.
-
-- Alternative: skip imputation entirely and use a learner that eats
-  missing values --- `rpart` surrogate splits, or XGBoost and BART,
-  which treat missingness as a value in its own right when choosing a
-  split.
-
-# Sequential BART {background-color="#40666e"}
-
-## The Problem It Solves
-
-- MICE has no joint distribution behind it. The univariate conditionals
-  you specify need not be **compatible** --- there may exist no joint
-  distribution having all of them as conditionals [@xu2016Sequential].
-
-- A second issue is **uncongeniality**: the imputation model and the
-  analysis model can imply different things about the data, and Rubin's
-  rules are not guaranteed to behave.
-
-- The parametric fixes (sequential regression on a monotone
-  factorization) restore compatibility but throw away flexibility: they
-  cannot capture nonlinearity or interactions.
-
-## The Sequential Factorization
-
-- @xu2016Sequential factor the joint distribution of the incomplete
-  covariates **exactly**:
-
-  $$p(X_1, X_2, \ldots, X_p) = p(X_1) \prod_{j = 2}^{p} p(X_j \mid X_1, \ldots, X_{j-1})$$
-
-- Each univariate conditional on the right is then modeled with BART
-  [@chipman2010Bart] --- the sum-of-trees machine from this morning.
-
-- Because the factorization is an identity, the conditionals **are**
-  compatible by construction. There is a real joint model, unlike in
-  MICE.
-
-- Flexibility is retained: each conditional is nonparametric, so
-  nonlinearity and interactions are learned rather than declared.
-
-## The Machinery
-
-1.  Missing entries are treated as **parameters** and handled by **data
-    augmentation**: at each MCMC sweep, draw the missing values from
-    their full conditional given the current trees.
-
-2.  Update the BART ensemble for each conditional given the now-complete
-    data.
-
-3.  Because everything sits inside one MCMC run, all conditionals are
-    sampled **simultaneously** rather than cycled through as in MICE.
-    There is no `maxit` and no separate convergence-of-the-chain
-    diagnostic per variable.
-
-4.  The $M$ imputations are simply $M$ thinned draws from the posterior.
-    Rubin's rules then apply as usual.
-
-::: notes
-This is the substantive difference from MICE. MICE alternates between
-conditionals that may not cohere; sequential BART draws from a single
-posterior in which the conditionals cohere by construction.
-:::
-
-## Does It Help?
-
-- In @xu2016Sequential's simulations with nonlinear covariate
-  relationships, sequential BART had bias near zero for every covariate,
-  while MICE, MICE-CART, and sequential parametric imputation were
-  biased on at least some.
-
-- Confidence interval coverage was close to nominal for sequential BART
-  and poor for the competitors, and the intervals were also the
-  **narrowest** --- better coverage at lower cost.
-
-- It handles MAR whether or not missingness depends on the response.
-
-- It was designed for the many-covariates, moderate-$n$ setting of
-  electronic health records --- which is more or less the setting of a
-  cross-national survey.
-
-## Caveats
-
-- The ordering of the sequential factorization is arbitrary and the
-  answer is not perfectly invariant to it.
-
-- Categorical and binary covariates need a probit / latent-variable
-  layer; continuous covariates are the natural case.
-
-- Cost. One BART ensemble per incomplete variable per sweep, over
-  thousands of sweeps. Orders of magnitude slower than `miceRanger`.
-
-## A Warning About the Package
-
-::: callout-warning
-## `sbart` is no longer maintained
-
-The reference implementation (`seqBART()` in the `sbart` package) has
-been archived and no longer builds against current R. Treat this section
-as **theory you should know**, not as a tool for Exercise 1.
-:::
-
-If you want the spirit of it in maintained code today:
-
-- `bartMachine(use_missing_data = TRUE)` --- does not impute at all, but
-  lets missingness itself serve as a splitting criterion, so the holes
-  are carried straight into the model.
-
-- `mice(method = "cart")` or `miceRanger` --- keeps the
-  chained-equations machinery, buys back the tree flexibility, gives up
-  the compatibility guarantee.
 
 ## References
