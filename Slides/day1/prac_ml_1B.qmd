@@ -1167,7 +1167,7 @@ ggplot(df, aes(x = x1, y = x2, col = y)) +
 
 ## Weighting Procedure Cont'd
 
--   Generate updated weights $w_i^* = w_i \exp (s \cdot e_i)$.
+-   Generate updated weights $w_i^* = w_i \exp (s \cdot m_i)$.
 
 -   Move to the next learner and repeat.
 
@@ -1180,7 +1180,7 @@ df$m <- c(rep(0,9), 1)
 df$e <- (df$w0 * df$m)/sum(df$w0)
 df$e_tot <- sum(df$e)
 df$stage <- log((1 - df$e_tot)/df$e_tot)
-df$w1 <- df$w0 * exp(df$stage * df$e)
+df$w1 <- df$w0 * exp(df$stage * df$m)
 df %>%
   kbl(digits = 3) %>%
   kable_styling(bootstrap_options = "striped",
@@ -1224,7 +1224,7 @@ df2[4,5] <- 1
 df2$e <- (df2$w1 * df2$m)/sum(df2$w1)
 df2$e_tot <- sum(df2$e)
 df2$stage <- log((1 - df2$e_tot)/df2$e_tot)
-df2$w2 <- df2$w1 * exp(df2$stage * df2$e)
+df2$w2 <- df2$w1 * exp(df2$stage * df2$m)
 df2 %>%
   kbl(digits = 3) %>%
   kable_styling(bootstrap_options = "striped", full_width = F,
@@ -1268,7 +1268,7 @@ df3[8,5] <- 1
 df3$e <- (df3$w2 * df3$m)/sum(df3$w2)
 df3$e_tot <- sum(df3$e)
 df3$stage <- log((1 - df3$e_tot)/df3$e_tot)
-df3$w3 <- df3$w2 * exp(df3$stage * df3$e)
+df3$w3 <- df3$w2 * exp(df3$stage * df3$m)
 df3 %>%
   kbl(digits = 3) %>%
   kable_styling(bootstrap_options = "striped", full_width = F,
@@ -1295,16 +1295,16 @@ df3 %>%
 #| echo: false
 df4 <- df %>%
   select(x1, x2, y)
-df4$psi1 <- ifelse(df4$x1 <= 5, 0, 1)
-df4$psi2 <- ifelse(df4$x2 <= 2.3, 1, 0)
-df4$psi3 <- ifelse(df4$x2 <= 1, 1, 0)
+df4$yhat1 <- ifelse(df4$x1 <= 5, 0, 1)
+df4$yhat2 <- ifelse(df4$x2 <= 2.3, 1, 0)
+df4$yhat3 <- ifelse(df4$x2 <= 1, 1, 0)
 df4$stage1 <- 2.197
 df4$stage2 <- 1.417
 df4$stage3 <- 1.452
-df4$psi_final <- (2 * df4$psi1 - 1) * df4$stage1 +
-  (2 * df4$psi2 - 1) * df4$stage2 +
-  (2 * df4$psi3 - 1) * df4$stage3
-df4$pred_label <- ifelse(df4$psi_final>=0, 1, 0)
+df4$yhat_final <- (2 * df4$yhat1 - 1) * df4$stage1 +
+  (2 * df4$yhat2 - 1) * df4$stage2 +
+  (2 * df4$yhat3 - 1) * df4$stage3
+df4$pred_label <- ifelse(df4$yhat_final>=0, 1, 0)
 df4 %>%
   kbl(digits = 3) %>%
   kable_styling(bootstrap_options = "striped", full_width = F,
