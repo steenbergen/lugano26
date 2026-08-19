@@ -1,0 +1,703 @@
+---
+title: MACHINE LEARNING FOR CAUSAL INFERENCE
+subtitle: Double Lasso, Double Machine Learning, and BART
+author:
+  - name: Marco R. Steenbergen
+    orcid: 0000-0002-5709-5165
+    email: steenbergen@ipz.uzh.ch
+    affiliations: University of Zurich
+date: last-modified
+format:
+  clean-revealjs:
+    revealjs-plugins:
+      - tabset
+    pdf-separate-fragments: true
+bibliography: /Users/prior/Resources/References/master.bib
+self-contained: true
+embed-resources: true
+editor_options:
+  chunk_output_type: console
+---
+
+## R Packages for This Lecture
+
+Beyond packages you have installed already, please add
+
+- `MatchIt` for the National Supported Work data we use throughout.
+
+- `hdm` for the (post-)double-selection lasso.
+
+- `DoubleML` for double machine learning.
+
+- `mlr3`, a set of efficient machine learning building blocks.
+
+- `mlr3learners` for using `ranger` and `glmnet` with `DoubleML`.
+
+- `bcf` for Bayesian causal forests.
+
+# The Foundations of Causal Inference {background-color="#40666e"}
+
+## The Potential Outcomes Framework
+
+### Rubin-Neyman Causal Model (RCM)
+
+For each unit $i$, we define two potential outcomes:
+
+- $Y_i(1)$: Outcome if treated ($W_i = 1$)
+
+- $Y_i(0)$: Outcome if control ($W_i = 0$)
+
+The **Individual Treatment Effect (ITE)** is: $$\tau_i = Y_i(1) - Y_i(0)$$
+
+[@rubin1974Estimating; @splawa-neyman1990Application].
+
+## What Makes This Well-Defined
+
+::: callout-note
+## SUTVA
+
+Writing $Y_i(w)$ at all presupposes the **stable unit treatment value assumption**:
+
+1.  **No interference:** unit $i$'s outcome does not depend on the treatments assigned to other units.
+2.  **No hidden versions of treatment:** "$W_i = 1$" denotes one and the same intervention for everybody.
+:::
+
+- SUTVA is an assumption about the *design*, not something machine learning can repair.
+
+- Everything that follows---double lasso, DML, causal forests---takes SUTVA as given.
+
+## The Fundamental Problem of Causal Inference
+
+- We only observe $Y_i = W_i Y_i(1) + (1 - W_i) Y_i(0)$. The counterfactual is never directly observed [@holland1986Statistics].
+
+- However, under certain assumptions it is possible to estimate *average* treatment effects such as:
+  - Average treatment effect: $\text{ATE} = \mathbb{E}[Y_i(1) - Y_i(0)]$
+  - Average treatment effect on the treated: $\text{ATET} = \mathbb{E}[Y_i(1) - Y_i(0) \mid W_i = 1]$
+
+- The ATET is often the more honest target in observational work: it asks only what the program did for the people who actually took it.
+
+## Our Running Example
+
+### The National Supported Work Demonstration
+
+- NSW was a 1970s US work-experience program for people with severe employment barriers, evaluated by **random assignment** [@lalonde1986Evaluating].
+
+- @lalonde1986Evaluating then did something devious: he threw the experimental controls away and replaced them with a survey comparison group (PSID).
+
+- The question: can a non-experimental estimator recover the experimental answer?
+
+- We use the version of these data assembled by @dehejia1999Causal and shipped with `MatchIt`.
+
+## The Data
+
+::: panel-tabset
+## Structure
+
+```{r}
+#| echo: true
+#| message: false
+library(MatchIt)
+data(lalonde, package = "MatchIt")
+str(lalonde)
+```
+
+## Design
+
+```{r}
+#| echo: true
+table(lalonde$treat)
+```
+
+- 185 treated units: the NSW experimental treatment group.
+
+- 429 controls: a comparison sample drawn from the PSID---**not** randomised, and visibly different.
+
+- Outcome `re78`: real earnings in 1978 (US\$); `re74`, `re75` are pre-treatment earnings.
+
+## Benchmark
+
+The *experimental* NSW contrast (treated vs. randomised controls) is
+
+$$\widehat{\text{ATET}} = 1794 \quad (\text{SE } = 633).$$
+
+Everything we do today is scored against that number.
+:::
+
+## Selection Bias and Unconfoundedness
+
+- If we simply compare observed means ($\mathbb{E}[Y \mid W=1] - \mathbb{E}[Y \mid W=0]$), we get:
+
+  $$\text{Naive Difference} = \underbrace{\text{ATET}}_{\mathbb{E}[Y(1) - Y(0)|W = 1]} + \underbrace{\text{Selection Bias}}_{\mathbb{E}[Y(0) \mid W=1] - \mathbb{E}[Y(0) \mid W=0]}$$
+
+  (confounding).
+
+- Key Identification Assumption: [**Conditional Ignorability**]{.alert}:
+
+  $$(Y(1), Y(0)) \perp W \mid \boldsymbol{x}$$
+
+- We condition on a set of covariates, $\boldsymbol{x}$.
+
+## The Second Assumption Nobody Writes Down
+
+::: callout-important
+## Overlap (positivity)
+
+$$0 < e(\boldsymbol{x}) \equiv \Pr(W = 1 \mid \boldsymbol{x}) < 1 \quad \text{for all } \boldsymbol{x} \text{ in the support}$$
+:::
+
+- Ignorability makes the effect *identified*; overlap makes it *estimable*.
+
+- For the ATET the requirement is weaker---we only need $e(\boldsymbol{x}) < 1$, since we never have to find treated counterparts for the controls.
+
+- $e(\boldsymbol{x})$ is the **propensity score** [@rosenbaum1983Central]. We will meet it again as a nuisance function.
+
+- Flexible machine learning makes overlap violations *worse*, not better: a sufficiently rich model can predict treatment almost perfectly, and then the weights explode.
+
+## How Bad Is It Here?
+
+```{r}
+#| echo: true
+# naive difference in means
+coef(summary(lm(re78 ~ treat, data = lalonde)))["treat", 1:2]
+```
+
+- The program appears to have *lowered* earnings by about \$635.
+
+- The experimental benchmark is $+1794$. The entire gap is selection: the PSID comparison group is older, better educated, more often married, and far richer in 1974--75.
+
+## The Danger of Parametric Controls
+
+In standard empirical workflows, researchers typically write down: $$Y_i = \beta W_i + \boldsymbol{x}_i^\top \boldsymbol{\gamma} + \epsilon_i$$
+
+::: callout-important
+## Why this fails in high dimensions
+
+- **Functional Form Misspecification:** Assuming $g(\boldsymbol{x}) = \boldsymbol{x}^\top \boldsymbol{\gamma}$ is linear leaks omitted variable bias into $\hat{\beta}$ if the true $g(\boldsymbol{x})$ is non-linear or interactive.
+- **Curse of Dimensionality:** Adding polynomial terms and interactions quickly leads to over-fitting ($P \approx N$).
+:::
+
+## Parametric Controls on NSW
+
+```{r}
+#| echo: true
+ols <- lm(re78 ~ treat + age + educ + race + married +
+            nodegree + re74 + re75, data = lalonde)
+coef(summary(ols))["treat", 1:2]
+```
+
+- Linear controls move us from $-635$ to $+1548$---most of the way to the benchmark.
+
+- But how much of that is the *right* adjustment and how much is luck in the functional form? Nothing in the output tells us.
+
+> **Key takeaway:** We need methods that control for $\boldsymbol{x}$ flexibly, without smuggling unexamined linearity assumptions into our causal estimates $\Rightarrow$ machine learning.
+
+# The Double Lasso {background-color="#40666e"}
+
+## The Tempting Shortcut
+
+- Build a rich dictionary of controls---polynomials, interactions, indicators---and let the lasso [@tibshirani1996Regression] pick the ones that matter for $Y$:
+
+  $$\min_{\beta, \boldsymbol{\gamma}} \; \sum_i (Y_i - \beta W_i - \boldsymbol{x}_i^\top \boldsymbol{\gamma})^2 + \lambda \lVert \boldsymbol{\gamma} \rVert_1$$
+
+- Then re-fit OLS on the selected set and report the usual standard errors.
+
+::: callout-warning
+## This does not work
+
+The lasso keeps a control only if it predicts $Y$ **strongly enough to beat the penalty**. A confounder that is a moderate predictor of $Y$ but a *powerful* predictor of $W$ gets dropped---and dropping it puts omitted variable bias straight back into $\hat{\beta}$.
+:::
+
+## Why the Bias Does Not Vanish
+
+- Regularisation trades variance for bias *by design*. That is fine for prediction; it is fatal for a structural coefficient.
+
+- The omitted-variable bias from a mistakenly excluded control $x_j$ is
+  $$\text{bias} \;\approx\; \gamma_j \cdot \frac{\text{Cov}(W, x_j)}{\text{Var}(W)},$$
+  which is large exactly when $x_j$ predicts treatment well---the case the lasso is worst at detecting.
+
+- Worse, the post-selection distribution of $\hat{\beta}$ is not the textbook normal: naive standard errors are too small and confidence intervals under-cover, sometimes badly [@leeb2005MODEL].
+
+## Post-Double-Selection
+
+@belloni2014Inference propose an elegant fix: **select twice**.
+
+1.  Run a lasso of $Y$ on $\boldsymbol{x}$. Keep the selected set $\hat{S}_Y$.
+
+2.  Run a lasso of $W$ on $\boldsymbol{x}$. Keep the selected set $\hat{S}_W$.
+
+3.  Estimate $Y_i = \beta W_i + \boldsymbol{x}_{i,\hat{S}}^\top \boldsymbol{\gamma} + \epsilon_i$ by OLS, where
+    $$\hat{S} = \hat{S}_Y \cup \hat{S}_W.$$
+
+4.  Report conventional heteroskedasticity-robust standard errors for $\hat{\beta}$.
+
+::: callout-tip
+The union in step 3 is the whole idea: a variable only escapes if it is unimportant for *both* equations.
+:::
+
+## Why the Union Immunises You
+
+::::: columns
+::: {.column width="50%"}
+### The intuition
+
+Any control that could bias $\hat{\beta}$ must be correlated with $W$. Step 2 is a dedicated search for exactly those variables, so a confounder has to survive two independent screens to be dropped.
+:::
+
+::: {.column width="50%"}
+### The theory
+
+Double selection makes the estimating equation **Neyman-orthogonal**: small errors in the two selection steps have zero first-order effect on $\hat{\beta}$, so $\hat{\beta}$ is $\sqrt{N}$-consistent and asymptotically normal [@belloni2014HighDimensional].
+:::
+:::::
+
+- Equivalently, it is Frisch--Waugh--Lovell done twice: residualise $Y$ *and* $W$ before comparing them.
+
+## What You Still Have to Assume
+
+::: callout-important
+## The fine print
+
+- **Approximate sparsity:** both $\mathbb{E}[Y \mid \boldsymbol{x}]$ and $\mathbb{E}[W \mid \boldsymbol{x}]$ are well approximated by $s$ terms of the dictionary, with $s \ll N / \log P$.
+- **Linearity in the dictionary:** the true functions must lie (approximately) in the span of the terms you supplied. Double lasso does not discover interactions you never wrote down.
+- **Ignorability and overlap** are unchanged. Selection over observables cannot fix unobserved confounding.
+:::
+
+- Practical corollary: the dictionary is a modelling decision, and a generous one is safer than a stingy one.
+
+## Building the Dictionary
+
+```{r}
+#| echo: true
+form_x <- ~ (age + educ + race + married + nodegree + re74 + re75)^2 +
+  I(age^2) + I(age^3) + I(educ^2) + I(re74^2) + I(re75^2) +
+  I(re74 == 0) + I(re75 == 0) - 1
+X <- model.matrix(form_x, data = lalonde)
+X <- X[, apply(X, 2, sd) > 0]       # drop degenerate columns
+y <- lalonde$re78
+d <- lalonde$treat
+dim(X)
+```
+
+- All pairwise interactions, some polynomials, and indicators for zero earnings in 1974/75 (a well-known marker of the NSW target population).
+
+## Illustration in R
+
+::: panel-tabset
+## Single selection
+
+```{r}
+#| echo: true
+#| message: false
+library(hdm)
+sel_y <- which(coef(rlasso(X, y))[-1] != 0)   # outcome equation only
+colnames(X)[sel_y]
+coef(summary(lm(y ~ d + X[, sel_y])))["d", 1:2]
+```
+
+## Double selection
+
+```{r}
+#| echo: true
+sel_d <- which(coef(rlasso(X, d))[-1] != 0)   # treatment equation
+colnames(X)[sel_d]
+S <- union(sel_y, sel_d)
+coef(summary(lm(y ~ d + X[, S])))["d", 1:2]
+```
+
+## What changed
+
+- The two selected sets are **disjoint**. Race and the "no 1974 earnings" indicator predict *treatment* strongly but were invisible to the outcome lasso.
+
+- The estimate moves from $1225$ to $1079$, and the standard error grows from $650$ to $789$.
+
+- That larger standard error is the honest one: single selection was pretending to know which controls belonged in the model.
+
+## `hdm`
+
+```{r}
+#| echo: true
+pds <- rlassoEffect(x = X, y = y, d = d, method = "double selection")
+summary(pds)
+confint(pds)
+```
+
+## Partialling out
+
+```{r}
+#| echo: true
+po <- rlassoEffect(x = X, y = y, d = d, method = "partialling out")
+summary(po)
+```
+
+The partialling-out variant residualises $Y$ and $W$ on the lasso fits directly rather than re-fitting OLS on the union. Same theory, slightly different finite-sample behaviour.
+:::
+
+## Where Double Lasso Runs Out
+
+- It is still a **linear** method: everything non-linear must be supplied by hand in the dictionary.
+
+- Selection is a hard thresholding rule, which behaves badly when several controls are strongly collinear---a real risk once you add all pairwise interactions.
+
+- It gives one number, $\hat{\beta}$, under a constant-effect assumption.
+
+> The natural next question: can we keep the double structure but replace the lasso with *any* machine learner?
+
+# Double Machine Learning {background-color="#40666e"}
+
+## The Historical Anchor
+
+- @robinson1988RootNConsistent introduced the partially linear model:
+
+  $$Y = \beta W + g(\boldsymbol{x}) + U, \quad \mathbb{E}[U \mid W, \boldsymbol{x}] = 0$$
+
+  where $g(\boldsymbol{x})$ is an **unknown, fully non-parametric function**.
+
+- Robinson's residualisation algorithm:
+
+  1.  Compute conditional expectations: $m(\boldsymbol{x}) = \mathbb{E}[Y \mid \boldsymbol{x}]$ and $e(\boldsymbol{x}) = \mathbb{E}[W \mid \boldsymbol{x}]$.
+  2.  Construct residuals: $\tilde{Y} = Y - m(\boldsymbol{x})$ and $\tilde{W} = W - e(\boldsymbol{x})$.
+  3.  Regress $\tilde{Y}$ on $\tilde{W}$ using OLS to obtain a $\sqrt{N}$-consistent estimate of $\beta$.
+
+## Upgrading Robinson: Double Machine Learning (DML)
+
+- @robinson1988RootNConsistent used 1980s kernel smoothers, whose convergence rate degrades sharply once $\boldsymbol{x}$ has more than three or four continuous variables.
+- Modern solution [@chernozhukov2018Double]:
+  - Replace kernel smoothers with modern ML algorithms (random forests, boosting, neural nets, or indeed the lasso).
+- We call this **double** machine learning because we have two predictive tasks:
+  - Predicting $Y$ from controls.
+  - Predicting $W$ from controls.
+
+::: callout-note
+Double lasso is the special case in which both learners are lassos and the residualisation is done by selection rather than by prediction.
+:::
+
+## Core Mechanisms
+
+::::: columns
+::: {.column width="50%"}
+### 1. Cross-fitting (sample splitting)
+
+Split the sample into $K$ folds. Fit $\hat{m}$ and $\hat{e}$ on the other $K-1$ folds, predict on the held-out fold, then rotate and average over folds. This removes the over-fitting bias created by using the same observations to estimate the nuisance functions and the effect.
+:::
+
+::: {.column width="50%"}
+### 2. Neyman orthogonality
+
+The moment condition is constructed so that its derivative with respect to the nuisance functions is zero at the truth. Small mistakes in $\hat{m}, \hat{e}$ therefore produce **no first-order bias** in $\hat{\beta}$.
+:::
+:::::
+
+## The Rate Condition
+
+::: callout-important
+## What "small mistakes" means
+
+Orthogonality is not magic---it buys you a *rate*, not immunity. The theory requires
+
+$$\lVert \hat{m} - m \rVert_2 \cdot \lVert \hat{e} - e \rVert_2 = o_P(N^{-1/2}),$$
+
+which is typically delivered if each nuisance function is estimated at rate $o_P(N^{-1/4})$.
+:::
+
+- $N^{-1/4}$ is far slower than the parametric $N^{-1/2}$, and many ML estimators achieve it under sparsity or smoothness.
+
+- But it is *not* free: a badly tuned forest or a hopeless propensity model still breaks the estimator.
+
+## Two Models, Two Estimands
+
+::::: columns
+::: {.column width="50%"}
+### Partially linear (PLR)
+
+$$Y = \beta W + g(\boldsymbol{x}) + U$$
+
+Assumes the effect is a **constant** $\beta$. Efficient, stable, and the natural generalisation of Robinson.
+:::
+
+::: {.column width="50%"}
+### Interactive (IRM)
+
+$$Y = g(W, \boldsymbol{x}) + U$$
+
+Puts no restriction on how $W$ interacts with $\boldsymbol{x}$; identifies the ATE or ATET through the doubly robust (AIPW) score.
+:::
+:::::
+
+- With a **binary** treatment, PLR does not estimate the ATE unless effects really are constant---it returns a particular variance-weighted average of $\tau(\boldsymbol{x})$.
+
+- Use the IRM when the estimand matters; use the PLR when you want one well-behaved summary number [@knaus2021Machine].
+
+## Illustration in R
+
+::: panel-tabset
+## Data object
+
+```{r}
+#| echo: true
+#| message: false
+library(DoubleML); library(mlr3); library(mlr3learners)
+lgr::get_logger("mlr3")$set_threshold("warn")  # silence learner chatter
+
+nsw <- lalonde
+nsw$black  <- as.integer(nsw$race == "black")
+nsw$hispan <- as.integer(nsw$race == "hispan")
+nsw$race   <- NULL
+
+x_cols <- c("age", "educ", "black", "hispan", "married",
+            "nodegree", "re74", "re75")
+dml_data <- DoubleMLData$new(nsw, y_col = "re78",
+                             d_cols = "treat", x_cols = x_cols)
+```
+
+Note that we hand the *raw* covariates to the forest: unlike the lasso, it builds its own interactions.
+
+## Learners
+
+```{r}
+#| echo: true
+set.seed(2026)
+ml_l <- lrn("regr.ranger",    num.trees = 500,      # E[Y|X]
+            min.node.size = 5)
+ml_m <- lrn("classif.ranger", num.trees = 500,      # E[W|X]
+            min.node.size = 5, predict_type = "prob")
+```
+
+Because $W$ is binary, the second nuisance function is a **classifier** returning probabilities, not a regressor.
+
+## PLR
+
+```{r}
+#| echo: true
+plr <- DoubleMLPLR$new(dml_data, ml_l = ml_l, ml_m = ml_m,
+                       n_folds = 5, n_rep = 5)
+plr$fit()
+plr$summary()
+```
+
+`n_rep = 5` repeats the whole cross-fitting exercise with different splits and aggregates, so the answer does not hinge on one lucky partition.
+
+## IRM / ATET
+
+```{r}
+#| echo: true
+set.seed(2026)
+irm <- DoubleMLIRM$new(
+  dml_data,
+  ml_g = lrn("regr.ranger", num.trees = 500, min.node.size = 5),
+  ml_m = lrn("classif.ranger", num.trees = 500, min.node.size = 5,
+             predict_type = "prob"),
+  n_folds = 5, n_rep = 5,
+  score = "ATTE", trimming_threshold = 0.01)
+irm$fit()
+irm$summary()
+```
+:::
+
+## Diagnosing Overlap
+
+```{r}
+#| echo: true
+#| fig-height: 4
+library(ranger)
+set.seed(2026)
+ehat <- ranger(factor(treat) ~ ., data = nsw[, c("treat", x_cols)],
+               probability = TRUE, num.trees = 1000)$predictions[, 2]
+
+hist(ehat[nsw$treat == 0], breaks = 30, col = "#40666e88", border = NA,
+     xlim = c(0, 1), main = "", xlab = expression(hat(e)(x)))
+hist(ehat[nsw$treat == 1], breaks = 30, col = "#c0504d88",
+     border = NA, add = TRUE)
+legend("topright", c("controls (PSID)", "treated (NSW)"), bty = "n",
+       fill = c("#40666e88", "#c0504d88"), border = NA)
+```
+
+## Overlap, Continued
+
+```{r}
+#| echo: true
+mean(ehat[nsw$treat == 0] < 0.05)   # controls with no plausible counterpart
+```
+
+- Roughly a third of the PSID controls look nothing like an NSW participant.
+
+- This is why the ATET is the defensible estimand here and the ATE is not: we have no business extrapolating a training-program effect to affluent PSID respondents.
+
+- It is also why the DML standard errors are larger than the OLS ones. That is a feature.
+
+## Scoring the Methods
+
+```{r}
+#| echo: false
+res <- data.frame(
+  Method = c("Experimental benchmark (NSW)", "Naive difference in means",
+             "OLS, linear controls", "Lasso, outcome equation only",
+             "Post-double-selection lasso", "Partialling-out lasso",
+             "DML, partially linear (RF)", "DML, interactive / ATET (RF)"),
+  Estimate = c(1794,
+               coef(summary(lm(re78 ~ treat, data = lalonde)))["treat", 1],
+               coef(summary(ols))["treat", 1],
+               coef(summary(lm(y ~ d + X[, sel_y])))["d", 1],
+               pds$coefficients, po$coefficients, plr$coef, irm$coef),
+  SE = c(633,
+         coef(summary(lm(re78 ~ treat, data = lalonde)))["treat", 2],
+         coef(summary(ols))["treat", 2],
+         coef(summary(lm(y ~ d + X[, sel_y])))["d", 2],
+         pds$se, po$se, plr$se, irm$se))
+res$Estimate <- round(res$Estimate)
+res$SE <- round(res$SE)
+knitr::kable(res, align = "lrr")
+```
+
+## Reading the Table
+
+- Every honest method lands in the \$700--1200 range with a standard error near \$800: the experimental benchmark of \$1794 is comfortably inside all of their confidence intervals, and so is zero.
+
+- Selection on observables gets us most of the way from $-635$ to the truth, but it cannot manufacture the precision an experiment gives you for free.
+
+- Note what the machine learning did *not* do: it did not sharpen the answer. It made the uncertainty honest and removed our dependence on a functional form we could not defend.
+
+::: callout-tip
+## The lesson for your own work
+
+Report the naive contrast, the parametric adjustment, and the orthogonal estimate side by side. Where they disagree, the disagreement is the finding.
+:::
+
+# Heterogeneous Treatment Effects {background-color="#40666e"}
+
+## Beyond Constant Treatment Effects
+
+- So far, we have assumed there is a single $\beta$ that describes all sub-groups equally well.
+
+- However, treatment effects usually vary.
+
+- How do we build that into machine learning?
+
+## The Meta-Learner Taxonomy
+
+| Learner | Estimator Strategy | Target Objective |
+|:-----------------------|:-----------------------|:-----------------------|
+| **S-Learner** | Single model $\hat{\mu}(\boldsymbol{x}, W)$ | Predict $Y$ directly; subtract predictions |
+| **T-Learner** | Two models: $\hat{\mu}_1(\boldsymbol{x})$ and $\hat{\mu}_0(\boldsymbol{x})$ | Model $W=1$ and $W=0$ independently |
+| **X-Learner** | Uses imputed counterfactuals | Designed for extreme treatment imbalance |
+| **R-Learner** | Minimizes Robinson's R-Loss | Directly optimizes $(\tilde{Y} - \tilde{W}\tau(\boldsymbol{x}))^2$ |
+
+## The Meta-Learner Taxonomy Cont'd
+
+| Learner | Use Cases | Weaknesses |
+|:-----------------------|:-----------------------|:-----------------------|
+| **S-Learner** | \(1\) Multi-valued or continuous $W$; (2) RCTs with minimal confounding. | Regularization bias: Trees and regularized models tend to shrink treatment effects toward 0 if main covariate effects dominate $Y$. |
+| **T-Learner** | \(1\) Balanced data sets; (2) when you want to ensure $W$ is not ignored. | Inefficient when sample sizes are imbalanced between arms; zero information sharing between arms. |
+| **X-Learner** | Severe treatment imbalance. | Computationally heavy. |
+| **R-Learner** | Large observational studies requiring **double robustness** (unbiased if *either* the propensity model or outcome model is correctly specified). | Pseudo-outcomes can become volatile and unstable if estimated propensity scores get dangerously close to 0 or 1. |
+
+## Causal Forests
+
+- @athey2019Generalized extend Robinson's residualization trick to **local adaptive neighborhood**.
+
+- Procedure
+
+  1.  Compute global ML predictions $\hat{m}(\boldsymbol{x})$ and $\hat{e}(\boldsymbol{x})$ to obtain residuals $\tilde{Y}$ and $\tilde{W}$.
+
+  2.  Recursively split the feature space into leaf nodes that **maximize heterogeneity** in treatment effect estimates.
+
+  3.  Compute locally weighted OLS inside each leaf:
+
+      $$\hat{\tau}(\boldsymbol{x}) = \frac{\sum_{i \in L(x)} \alpha_i(\boldsymbol{x}) \tilde{Y}_i \tilde{W}_i}{\sum_{i \in L(x)} \alpha_i(\boldsymbol{x}) \tilde{W}_i^2}$$
+
+- DR-learning
+
+## Causal Forests Cont'd
+
+> To preserve valid asymptotic inference, trees use separate sub-samples for deciding split locations versus estimating leaf-level treatment effects.
+
+## Regularization-Induced Confounding (RIC)
+
+- In observational studies, when confounding is strong, standard ML trees confuse baseline prognostic variation ($Y(0)$) with treatment heterogeneity ($\tau(\boldsymbol{x})$) [@hahn2020Bayesian].
+
+- For instance,
+
+  - A job-training program has a true positive effect.
+  - However, the treatment indicator is greedily used as a shortcut to capture baseline wage differences driven by confounding rather than treatment heterogeneity.
+  - As a result the causal effect is shrunk to 0.
+
+## Bayesian Causal Forests
+
+- @hahn2020Bayesian propose Bayesian causal forests (BCF) as a way out off RIC.
+
+- BCF modifies the BART prior:
+
+  $$Y_i = \mu(\boldsymbol{x}_i, \hat{\pi}(\boldsymbol{x}_i)) + W_i \cdot \tau(\boldsymbol{x}_i) + \epsilon_i$$
+
+- Specifically,
+  - **Explicit propensity entry:** Including $\hat{\pi}(\boldsymbol{x})$ directly into $\mu(\cdot)$ absorbs baseline confounding.
+  - **Targeted shrinkage:** Applies strong regularization on $\tau(\boldsymbol{x})$ (shrinks to homogeneity) while allowing $\mu(\boldsymbol{x})$ to stay flexible.
+
+## A Hybrid
+
+- **Like a T-Learner / X-Learner:** BCF explicitly separates the treatment groups/effects from the baseline, avoiding the naive blurring of an S-learner.
+
+- **Like an R-Learner / DR-Learner:** BCF directly incorporates an estimated propensity score $\hat{\pi}(\boldsymbol{x})$ into the model architecture to neutralize confounding.
+
+## Illustration
+
+::: panel-tabset
+## DGP
+
+```{r}
+#| echo: true
+#| eval: false
+# data generating process
+set.seed(19)
+
+p = 3 # three control variables
+n = 250
+
+x = matrix(rnorm(n*p), nrow=n)
+
+# create targeted selection
+q = -1*(x[,1]>(x[,2])) + 1*(x[,1]<(x[,2]))
+
+# generate treatment variable
+pi = pnorm(q)
+w = rbinom(n,1,pi)
+
+# tau is the true (heterogeneous) treatment effect
+tau = (0.5*(x[,3] > -3/4) + 0.25*(x[,3] > 0) + 0.25*(x[,3]>3/4))
+
+# generate the response using q, tau and w
+mu = (q + tau*w)
+
+# set the noise level relative to the expected mean function of Y
+sigma = diff(range(q + tau*pi))/8
+
+# draw the response variable with additive error
+y = mu + sigma*rnorm(n)
+```
+
+## Estimation
+
+```{r}
+#| echo: true
+#| eval: false
+#| message: false
+library(bcf)
+# If you didn't know pi, you would estimate it here
+pihat = pnorm(q)
+
+n_burn = 5000
+n_sim = 5000
+
+bcf_fit = bcf(y               = y,
+              z               = w,
+              x_control       = x,
+              x_moderate      = x,
+              pihat           = pihat,
+              nburn           = n_burn,
+              nsim            = n_sim,
+              n_chains        = 2,
+              update_interval = 100,
+              save_tree_directory = './trees')
+```
+:::
+
+## References
