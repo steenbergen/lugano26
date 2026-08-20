@@ -1,0 +1,314 @@
+---
+title: MACHINE LEARNING FOR PANEL DATA
+subtitle: Cross-Validation and Methods
+author:
+  - name: Marco R. Steenbergen
+    orcid: 0000-0002-5709-5165
+    email: steenbergen@ipz.uzh.ch
+    affiliations: University of Zurich
+date: last-modified
+format:
+  clean-revealjs:
+    revealjs-plugins:
+      - tabset
+    pdf-separate-fragments: true
+bibliography: /Users/prior/Resources/References/master.bib
+self-contained: true
+embed-resources: true
+editor_options:
+  chunk_output_type: console
+---
+
+# What Is Panel Data? {background-color="#40666e"}
+
+## Repeated Observation of the Same Cases
+
+> A panel data set consists of repeated observations on the same cases.
+
+With $N$ units and $T$ time periods, we have $N \cdot T$ observations.
+
+## Fixed Effects
+
+- We have an outcome $Y_{it}$ that varies across units $i$ and time points $t$.
+
+- We have a vector of time-varying covariates $\boldsymbol{x}_{it}$.
+
+- Consistent estimation requires that we control for baseline differences across units and/or common shocks in time,
+
+- One-way fixed effects:
+
+  $$Y_{it} = \boldsymbol{x}_{it}^\top \boldsymbol{\beta} + \alpha_i + \varepsilon_{it}$$
+
+- Two-way fixed effects:
+
+  $$Y_{it} = \boldsymbol{x}_{it}^\top \boldsymbol{\beta} + \alpha_i + \lambda_t + \varepsilon_{it}$$
+
+## First Differences in One-Way Fixed Effects
+
+We compute $Y_{i,t} - Y_{i,t-1}$:
+
+$$\begin{array}{lll}
+Y_{i,t} - Y_{i,t-1} & = & \left( \boldsymbol{x}_{i,t}^\top \boldsymbol{\beta} + \alpha_i + \varepsilon_{i,t} \right) - \\
+& & \left( \boldsymbol{x}_{i,t-1}^\top \boldsymbol{\beta} + \alpha_i + \varepsilon_{i,t-1}\right) \\
+& = & (\boldsymbol{x}_{i,t} - \boldsymbol{x}_{i,t-1})^\top \boldsymbol{\beta} + (\varepsilon_{i,t} - \varepsilon_{i,t-1})
+\end{array}$$
+
+## Another Strategy: Demeaning
+
+- Imagine we subtract the average over the outcome, features, and errors over time:
+  $$\mathbb{E}_t[Y_{it}] = (\mathbb{E}_t[\boldsymbol{x}_{it}])^\top \boldsymbol{\beta} + \alpha_i + \mathbb{E}_t[\varepsilon_{it}]$$
+  - We now demean:
+    $$Y_{it} - \mathbb{E}_t[Y_{it}] = \left( \boldsymbol{x}_{it} - \mathbb{E}_t[\boldsymbol{x}_{it}] \right)^\top \boldsymbol{\beta} + \left( \varepsilon_{it} - \mathbb{E}_t[\varepsilon_{it}] \right)$$
+
+## Machine Learning for Panel Data
+
+- We want to replace the linear with a flexible functional form.
+
+- We learn that form from the data.
+
+# Cross-Validation in Panels {background-color="#40666e"}
+
+## What Is Different
+
+- We have two dimensions of variation:
+
+  1.  Cross-sections that may display clustering.
+
+  2.  Time within entities, with autocorrelation over time in the same entity.
+
+- How we split panel data, fundamentally changes the model's learned structure [@sweet2023CrossValidation].
+
+## Re-Sampling Options
+
+| Approach | Mechanism | What It Tests | Implementation |
+|------------------|------------------|------------------|------------------|
+| Group/Unit $v$-fold | Splits by identity ID---all time periods for $i$ stay in the same fold. | Generalization to unseen entities. | `group_vfold_cv(data, group = entity_id)` |
+| Temporal panel split | Cut at time $t_1$ across all entities | Generalization to future time points. | `initial_time_split()` or `sliding_period()` |
+| Block 2D split | Hold out both unseen entities and future time points | Generalization to unseen entities in the future | Custom grouping on ID + date cutoffs |
+
+# Algorithms {background-color="#40666e"}
+
+## Using Standard Algorithms
+
+- In principle, we can use anything that we have used before.
+- However, in pre-processing we will have to do some feature engineering:
+  - First differences
+  - Demeaning
+
+## Double-Machine Learning
+
+- @clarke2026Double propose a double-machine learning algorithm.
+- Partially linear panel regression (PLPR):
+  
+  $$Y_{it} = D_{it}\theta_0 + g_1(\boldsymbol{x}_{it}) + \alpha_i + \varepsilon_{it}$$
+
+  - $\theta_0$ is what we want: the average partial effect (ATE for binary $D$).
+  - $g_1$ is a nuisance function of unknown form---hand it to a learner.
+  - $\alpha_i$ is time-invariant heterogeneity that is *correlated* with treatment and covariates: $E[\alpha_i \mid D_{it}, \boldsymbol{x}_{it}] \neq 0$.
+- Off-the-shelf DML assumes i.i.d. observations and no $\alpha_i$---it fails here on both counts.
+
+## Partialling Out
+
+- DML works with the partialled-out form [@clarke2026Double]:
+  $$Y_{it} = V_{it}\theta_0 + l_1(\boldsymbol{x}_{it}) + \alpha_i + \varepsilon_{it}$$
+  $$V_{it} = D_{it} - m_1(\boldsymbol{x}_{it}) - \gamma_i$$
+- Two prediction problems, both delegated to ML:
+  - $l_1 = E[Y \mid \boldsymbol{x}]$---the outcome equation.
+  - $m_1 = E[D \mid \boldsymbol{x}]$---the treatment equation.
+- $\theta_0$ is then the regression of the $Y$-residual on the $D$-residual: Robinson (1988), made panel-aware.
+
+::: {.notes}
+Emphasise: we are not predicting $Y$ for its own sake. The learners exist only to strip the confounders out of both $Y$ and $D$.
+:::
+
+## What We Have to Assume
+
+- **Selection on observables and time-invariant unobservables**: $Y_{it}(\cdot) \perp\!\!\!\perp D_{it} \mid \boldsymbol{x}_{it}, \xi_i$.
+
+- **Static panel, no feedback**: no lagged $Y$ or $D$ driving current covariates---observed lag dependence is non-causal autocorrelation.
+
+- **Homogeneity and linearity of the effect**: $\theta_0$ is common across units; CATEs require an explicit parametric heterogeneity model.
+
+- **Additive separability** of observed and unobserved confounding.
+
+- **Rate condition**: the learners converge at $N^{1/4}$. With Neyman orthogonality plus cross-fitting, $\hat{\theta}$ is $\sqrt{N}$-consistent and asymptotically normal.
+
+## Removing the Fixed Effects
+
+- Three routes, all extensions of familiar linear estimators:
+  1.  **CRE (Mundlak)**: model $\alpha_i$ as a function of the individual means $\bar{\boldsymbol{x}}_i$ and add them as features---fixed effects become random effects.
+  2.  **Within-group (WG)**: subtract individual means.
+  3.  **First difference (FD)**: subtract the previous wave.
+- The catch: transformation and nuisance function do not commute.
+  $$Q\big(l_1(\boldsymbol{x}_{it})\big) \neq l_1\big(Q(\boldsymbol{x}_{it})\big) \quad\text{unless } l_1 \text{ is linear}$$
+- "Demean first, then throw a random forest at it" is *not* innocuous.
+
+## Approximate vs. Exact
+
+- **Approximate**: learn on the transformed data, i.e. accept $Q(l_1(\boldsymbol{x}_{it})) \approx l_1(Q(\boldsymbol{x}_{it}))$.
+
+  - Cheap, but the approximation error is large when $g_1$ is strongly non-linear.
+
+- **Exact**: learn the transformed conditional expectation directly.
+
+  - FD: $E[Y_{it} - Y_{i,t-1} \mid \boldsymbol{x}_{it}, \boldsymbol{x}_{i,t-1}]$---give the learner *both* waves' covariates.
+
+  - WG-exact would condition on the whole history; the learning problem is $O(T^2)$ times larger---infeasible for non-trivial $T$.
+
+- `xtdml` therefore offers `"fd-exact"`, `"wg-approx"`, `"cre"`, and `"pooled"`.
+
+## Which Approach?
+
+- Clarke and Polselli recommend **FD (exact)**: it imposes the fewest constraints on the distribution of the fixed effects and needs no Mundlak-type model.
+
+- CRE can be more efficient, but only if the model for $\alpha_i$ is right.
+
+- No single learner wins: LASSO with a rich dictionary was best in their simulations, tree ensembles elsewhere. Use an **ensemble or super-learner** strategy.
+
+- Caution with tree-based learners: highly tuning-sensitive, and sampling distributions of $\hat{\theta}$ can be far from normal---first-order inference then misleads.
+
+## Cross-Fitting: The Panel Twist
+
+- DML splits the sample so that the observations used to estimate $\theta$ never trained their own nuisance predictions---this is what removes regularisation and overfitting bias.
+
+- Naive $k$-fold over *rows* would put worker $i$'s 1980 wave in training and her 1981 wave in estimation: leakage straight through $\alpha_i$ and the serial correlation.
+
+- `xtdml` uses **block-$k$-fold cross-fitting**: the sampling unit is the *individual*, and the entire time series of $i$ is allocated to one fold.
+
+- $W_i = \{W_{i1}, \ldots, W_{iT}\}$ is i.i.d. across $i$; $W_{it}$ is not. Blocking restores the i.i.d. unit the theory needs.
+
+## The Algorithm
+
+1.  Partition the $N$ individuals into $K$ folds $\mathcal{W}_1, \ldots, \mathcal{W}_K$ of equal size (default $K = 5$).
+
+2.  For fold $k$: learn $\hat{\eta}_k = (\hat{l}_1, \hat{m}_1)$ on the other $K-1$ folds---i.e. on *other people*.
+
+3.  Predict into fold $k$ and form the orthogonal score $\psi^\perp(W_i; \theta, \hat{\eta}_k)$.
+
+4.  Solve the stacked moment condition (DML2):
+
+    $$\hat{\theta}^{\text{DML}} = \Big(\textstyle\sum_k \sum_{i \in \mathcal{W}_k} \hat{V}_i'\hat{V}_i\Big)^{-1} \sum_k \sum_{i \in \mathcal{W}_k} \hat{V}_i'\hat{\varepsilon}_i$$
+
+5.  Variance: cluster-robust sandwich at the individual level.
+
+## Why Blocking Buys Two Things
+
+- **Validity of the split**: the unit of independence is the person, so the training and estimation samples are genuinely independent.
+
+- **Autocorrelation for free**: because the whole series of $i$ lives in one fold and the score aggregates over $t$ within $i$, within-individual dependence is absorbed by the cluster-robust variance---no post-fitting correction for serial correlation is needed.
+
+- Under FD, folds are drawn over units *before* differencing, so the $(t-1, t)$ pair can never straddle two folds.
+
+## Folds Here Are Not Model Evaluation
+
+- Mechanically this is `group_vfold_cv(data, group = id)` from the table earlier---the purpose is different.
+
+- Earlier: folds *measure* out-of-sample accuracy.
+
+- Here: folds are how the estimator earns an unbiased score and valid standard errors. Nobody reports the fold-wise RMSE as the result.
+
+- More folds means more training data per nuisance fit but more computation; $K = 5$ is the default and what the paper uses.
+
+- One partition is a lucky draw: set `n_rep > 1` to average over repeated splittings, and always set a seed.
+
+## `xtdml` in Practice
+
+::: panel-tabset
+## Data
+
+```{r}
+#| echo: true
+library(xtdml)
+library(mlr3learners)
+library(panelr)
+data("WageData")   # 595 workers, 7 waves (Cornwell & Rupert)
+
+dml_wages <- xtdml_data_from_data_frame(
+  df       = WageData,
+  y_col    = "lwage",
+  d_cols   = "union",
+  x_cols   = c("exp", "wks", "occ", "ind", "south", "smsa", "ms"),
+  panel_id = "id",
+  time_id  = "t",
+  approach = "fd-exact",  # set HERE, not in $new()
+  transformX = "no"       # "minmax" for NNs, "poly" for LASSO
+)
+```
+
+## Estimate
+
+```{r}
+#| echo: true
+#| eval: false
+set.seed(20260820)
+
+model <- xtdml_plr$new(
+  data   = dml_wages,
+  ml_l   = lrn("regr.ranger"),
+  ml_m   = lrn("regr.ranger"),
+  n_folds = 5,          # block folds over the 595 workers
+  n_rep   = 1,          # raise to average over splits
+  score   = "orth-PO",  # or "orth-IV" (then supply ml_g)
+  dml_procedure = "dml2"
+)
+
+model$fit()
+model$summary()
+```
+
+## Results
+
+```{r}
+set.seed(20260820)
+
+model <- xtdml_plr$new(
+  data   = dml_wages,
+  ml_l   = lrn("regr.ranger"),
+  ml_m   = lrn("regr.ranger"),
+  n_folds = 5,          # block folds over the 595 workers
+  n_rep   = 1,          # raise to average over splits
+  score   = "orth-PO",  # or "orth-IV" (then supply ml_g)
+  dml_procedure = "dml2"
+)
+
+model$fit()
+model$summary()
+```
+
+## Gotchas
+
+```{r}
+#| echo: true
+#| eval: false
+# 1. FD and WG absorb time-invariant covariates:
+#    fem, blk, ed cannot enter. Only CRE keeps them.
+
+# 2. exp increases by one each wave, so Delta exp is
+#    constant -> no identifying variation under FD.
+
+# 3. FD costs the first wave: 7 waves -> 6 differences.
+
+# 4. union is binary; theta is an ATE only under the
+#    homogeneity assumption.
+
+# 5. Robustness: rerun with approach = "wg-approx" and
+#    "cre", and swap in regr.xgboost / regr.cv_glmnet.
+```
+:::
+
+## Reading the Output
+
+- `summary()` gives $\hat{\theta}$, a cluster-robust standard error, $t$, and $p$---clustered at `panel_id` unless `cluster_cols` says otherwise.
+
+- Report the estimate *alongside* the OLS/FE benchmark: agreement suggests a linear or smoothly non-linear DGP; divergence is the interesting case.
+
+- Sensitivity to the learner is information, not noise---it tells you the nuisance functions are poorly estimated by at least one of them.
+
+- What DML does not fix: dynamics (lagged $Y$), effect heterogeneity, and any confounder that is both time-varying and unmeasured.
+
+::: {.notes}
+Good place for the hands-on exercise: have them run all three approaches and two learners on WageData and compare the four numbers.
+:::
+
+
+## References

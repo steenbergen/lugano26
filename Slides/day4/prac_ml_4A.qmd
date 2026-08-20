@@ -622,15 +622,100 @@ Report the naive contrast, the parametric adjustment, and the orthogonal estimat
 
 ## Bayesian Causal Forests
 
-- @hahn2020Bayesian propose Bayesian causal forests (BCF) as a way out off RIC.
+- @hahn2020Bayesian propose Bayesian causal forests (BCF) as a way out of RIC.
 
-- BCF modifies the BART prior:
+- The trick is to stop fitting *one* forest to $Y$ and fit **two**, each with its own job and its own prior:
 
-  $$Y_i = \mu(\boldsymbol{x}_i, \hat{\pi}(\boldsymbol{x}_i)) + W_i \cdot \tau(\boldsymbol{x}_i) + \epsilon_i$$
+  $$Y_i = \underbrace{\mu(\boldsymbol{x}_i, \hat{\pi}(\boldsymbol{x}_i))}_{\text{prognostic: where you start}} + \; W_i \cdot \underbrace{\tau(\boldsymbol{x}_i)}_{\text{moderating: what treatment does}} + \; \epsilon_i$$
 
-- Specifically,
-  - **Explicit propensity entry:** Including $\hat{\pi}(\boldsymbol{x})$ directly into $\mu(\cdot)$ absorbs baseline confounding.
-  - **Targeted shrinkage:** Applies strong regularization on $\tau(\boldsymbol{x})$ (shrinks to homogeneity) while allowing $\mu(\boldsymbol{x})$ to stay flexible.
+- $\mu$ and $\tau$ are each a **sum-of-trees** ensemble in the BART sense. Splitting them is what makes the regularisation targetable: we can be generous with $\mu$ and severe with $\tau$.
+
+## But ...
+
+> The question this raises: if both are forests, and forests are grown greedily, what stops $\tau$ from doing the same damage as before? The answer is entirely in the prior.
+
+## What a BART Prior Actually Controls
+
+A BART ensemble is deliberately built from **weak** learners. Three prior components enforce that:
+
+::: callout-note
+## The three knobs
+
+1.  **Tree shape.** The probability that a node at depth $d$ is split rather than left as a leaf is
+    $$\Pr(\text{split at depth } d) = \alpha (1 + d)^{-\beta}, \qquad \alpha \in (0,1),\; \beta > 0.$$
+    Small $\alpha$ or large $\beta$ means shallow trees.
+2.  **Leaf values.** Each terminal node draws its value from $N(0, \sigma^2_{\text{leaf}})$, with $\sigma_{\text{leaf}}$ scaled by $1/\sqrt{m}$ for an $m$-tree ensemble, so no single tree can move the fit far.
+3.  **Error variance.** $\sigma^2$ gets an inverse-$\chi^2$ prior calibrated against a rough data-based estimate [@chipman2010Bart].
+:::
+
+- In ordinary BART you set these once. In BCF you set them **twice**---and differently.
+
+## Two Forests, Two Priors
+
+These are the `bcf` package defaults, and they are not symmetric:
+
+| | $\mu(\boldsymbol{x}, \hat\pi)$ --- prognostic | $\tau(\boldsymbol{x})$ --- moderating |
+|:---------------|:--------------------------|:--------------------------|
+| Number of trees $m$ | 200 | 50 |
+| Split base $\alpha$ | 0.95 | **0.25** |
+| Split power $\beta$ | 2 | **3** |
+| Prior SD of the function | $2\,\mathrm{sd}(y)$ | $\mathrm{sd}(y)$ |
+| Hyperprior on that SD | half-**Cauchy** | half-**Normal** |
+| Inputs | `x_control` **and** $\hat\pi(\boldsymbol{x})$ | `x_moderate` |
+
+- Read the $\tau$ column as a statement of belief: *effects are probably close to constant, and I will need convincing otherwise.*
+
+## What Those Numbers Do
+
+```{r}
+#| echo: true
+d <- 0:4
+data.frame(depth = d,
+           mu  = round(0.95 * (1 + d)^(-2), 3),
+           tau = round(0.25 * (1 + d)^(-3), 3))
+```
+
+- A priori, **75% of the $\tau$-trees are a single stump**---no split at all. A $\mu$-tree splits at the root with probability 0.95.
+
+- Conditional on having split once, a $\tau$-tree splits again with probability 0.03. Every layer of heterogeneity has to be paid for out of the likelihood.
+
+- The moderating forest is also smaller (50 trees vs. 200), so it has less capacity to begin with.
+
+## Targeted Shrinkage
+
+The scale of each function is itself a parameter, and this is where the asymmetry bites hardest.
+
+::::: columns
+::: {.column width="50%"}
+### $\mu$: half-Cauchy
+
+Heavy-tailed. If baseline earnings really are a wild function of $\boldsymbol{x}$, the prior offers no resistance---the data can push $\mathrm{SD}(\mu)$ as high as needed.
+:::
+
+::: {.column width="50%"}
+### $\tau$: half-Normal
+
+Light-tailed. Large heterogeneity is *a priori* implausible, so $\tau$ cannot talk itself into a big spread on weak evidence. It shrinks toward a constant, not toward zero.
+:::
+:::::
+
+## Targeted Shrinkage Cont'd
+
+- This is the sense in which the shrinkage is **targeted**: heavy regularisation exactly where over-fitting produces false discoveries, near-none where flexibility is genuinely needed.
+
+- Note what is *not* shrunk: the average effect. Shrinking $\tau(\boldsymbol{x})$ toward homogeneity is not the same as shrinking it toward zero---which is precisely the RIC failure.
+
+## Why $\hat{\pi}$ Goes Inside $\mu$
+
+- Under **targeted selection**, people are assigned to treatment on the basis of their *prognosis*: the ones who would do badly anyway are the ones enrolled.
+
+- That makes $\hat\pi(\boldsymbol{x})$ a one-dimensional summary of exactly the confounding pattern $\mu$ needs to absorb. A tree that would otherwise need many splits in $\boldsymbol{x}$ can capture it in one split on $\hat\pi$.
+
+- If $\mu$ cannot represent it cheaply, the greedy fit reaches for the next best thing---the treatment indicator---and the confounding lands in $\hat\tau$. That *is* RIC.
+
+::: callout-tip
+In the `bcf` package this is `include_pi = "control"`, the default. The documentation calls it "HIGHLY recommended with observational data"; it is the single ingredient that distinguishes BCF from running BART with an interaction.
+:::
 
 ## A Hybrid
 
@@ -638,66 +723,240 @@ Report the naive contrast, the parametric adjustment, and the orthogonal estimat
 
 - **Like an R-Learner / DR-Learner:** BCF directly incorporates an estimated propensity score $\hat{\pi}(\boldsymbol{x})$ into the model architecture to neutralize confounding.
 
-## Illustration
+- **Unlike either:** the output is a full posterior. Every statement below---the ATE, each $\tau(\boldsymbol{x}_i)$, the spread of effects---comes with an interval for free.
+
+## Does It Recover Known Heterogeneity?
+
+Before trusting BCF on real data, run it where we know the answer.
 
 ::: panel-tabset
 ## DGP
 
 ```{r}
 #| echo: true
-#| eval: false
-# data generating process
-set.seed(19)
+set.seed(1)
+p <- 3          # two confounders (x1, x2) and one moderator (x3)
+n <- 250
+x <- matrix(rnorm(n * p), nrow = n)
 
-p = 3 # three control variables
-n = 250
+# targeted selection: assignment tracks the prognostic score
+q  <- -1 * (x[, 1] > x[, 2]) + 1 * (x[, 1] < x[, 2])
+pi_true <- pnorm(q)
+w  <- rbinom(n, 1, pi_true)
 
-x = matrix(rnorm(n*p), nrow=n)
+# the true effect is a step function of x3 -- and of nothing else
+tau <- 0.5 * (x[, 3] > -3/4) + 0.25 * (x[, 3] > 0) + 0.25 * (x[, 3] > 3/4)
 
-# create targeted selection
-q = -1*(x[,1]>(x[,2])) + 1*(x[,1]<(x[,2]))
-
-# generate treatment variable
-pi = pnorm(q)
-w = rbinom(n,1,pi)
-
-# tau is the true (heterogeneous) treatment effect
-tau = (0.5*(x[,3] > -3/4) + 0.25*(x[,3] > 0) + 0.25*(x[,3]>3/4))
-
-# generate the response using q, tau and w
-mu = (q + tau*w)
-
-# set the noise level relative to the expected mean function of Y
-sigma = diff(range(q + tau*pi))/8
-
-# draw the response variable with additive error
-y = mu + sigma*rnorm(n)
+sigma <- diff(range(q + tau * pi_true)) / 8
+y <- q + tau * w + sigma * rnorm(n)
 ```
 
-## Estimation
+## Fit
+
+```{r}
+#| echo: true
+#| message: false
+#| warning: false
+library(bcf)
+pihat <- pnorm(q)      # if you did not know it, you would estimate it here
+
+sink(tempfile())       # bcf's MCMC logger is extremely chatty
+bcf_sim <- bcf(y = y, z = w,
+               x_control  = x,      # inputs to mu()
+               x_moderate = x,      # inputs to tau()
+               pihat      = pihat,
+               nburn = 2000, nsim = 2000, n_chains = 2,
+               no_output = TRUE, verbose = FALSE, random_seed = 1)
+sink()
+```
+
+Two chains of 2000 draws take roughly 40 seconds. `no_output = TRUE` stops `bcf` writing every tree to disk.
+
+## ATE
+
+```{r}
+#| echo: true
+tau_post <- bcf_sim$tau            # draws x units
+dim(tau_post)
+
+ate_post <- rowMeans(tau_post)     # posterior for the sample ATE
+round(c(mean = mean(ate_post),
+        quantile(ate_post, c(0.025, 0.975))), 3)
+
+round(mean(tau), 3)                # the truth
+```
+
+The posterior covers the truth. Note that we get the interval by *summarising draws*, not by asymptotics.
+
+## Recovery I
 
 ```{r}
 #| echo: true
 #| eval: false
-#| message: false
-library(bcf)
-# If you didn't know pi, you would estimate it here
-pihat = pnorm(q)
+tauhat <- colMeans(tau_post)
+round(cor(tauhat, tau), 3)
 
-n_burn = 5000
-n_sim = 5000
-
-bcf_fit = bcf(y               = y,
-              z               = w,
-              x_control       = x,
-              x_moderate      = x,
-              pihat           = pihat,
-              nburn           = n_burn,
-              nsim            = n_sim,
-              n_chains        = 2,
-              update_interval = 100,
-              save_tree_directory = './trees')
+par(mfrow = c(1, 2), mar = c(4, 4, 1, 1))
+plot(tau, tauhat, pch = 19, col = "#40666e88",
+     xlab = expression(tau(x)~"  (truth)"), ylab = expression(hat(tau)(x)))
+abline(0, 1, lwd = 2, col = "#c0504d")
+plot(x[, 3], tauhat, pch = 19, col = "#40666e88",
+     xlab = expression(x[3]~"  (the true moderator)"),
+     ylab = expression(hat(tau)(x)))
 ```
+
+## Recovery II
+
+```{r}
+#| fig-height: 3.6
+tauhat <- colMeans(tau_post)
+round(cor(tauhat, tau), 3)
+
+par(mfrow = c(1, 2), mar = c(4, 4, 1, 1))
+plot(tau, tauhat, pch = 19, col = "#40666e88",
+     xlab = expression(tau(x)~"  (truth)"), ylab = expression(hat(tau)(x)))
+abline(0, 1, lwd = 2, col = "#c0504d")
+plot(x[, 3], tauhat, pch = 19, col = "#40666e88",
+     xlab = expression(x[3]~"  (the true moderator)"),
+     ylab = expression(hat(tau)(x)))
+```
+## Placebo 1
+
+```{r}
+#| echo: true
+#| eval: false
+# Placebo moderators
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+plot(x[, 1], tauhat, pch = 19, col = "#40666e88", main = expression(x[1]),
+     xlab = "", ylab = expression(hat(tau)(x)), ylim = range(tauhat))
+plot(x[, 2], tauhat, pch = 19, col = "#40666e88", main = expression(x[2]),
+     xlab = "", ylab = "", ylim = range(tauhat))
+```
+
+## Placebo 2
+
+```{r}
+#| fig-height: 3.6
+# Placebo moderators
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+plot(x[, 1], tauhat, pch = 19, col = "#40666e88", main = expression(x[1]),
+     xlab = "", ylab = expression(hat(tau)(x)), ylim = range(tauhat))
+plot(x[, 2], tauhat, pch = 19, col = "#40666e88", main = expression(x[2]),
+     xlab = "", ylab = "", ylim = range(tauhat))
+```
+
+$x_1$ and $x_2$ drive **selection**, not the effect. The clouds are flat: the $\tau$ prior refused to convert confounding into heterogeneity. That is the RIC fix working.
+:::
+
+## BCF on the NSW Data
+
+::: panel-tabset
+## Setup
+
+```{r}
+#| echo: true
+#| message: false
+library(MatchIt); library(ranger)
+data(lalonde, package = "MatchIt")
+
+Xb <- model.matrix(~ age + educ + race + married + nodegree +
+                     re74 + re75 - 1, data = lalonde)
+set.seed(2026)
+pihat_nsw <- ranger(factor(treat) ~ .,
+                    data = data.frame(treat = lalonde$treat, Xb),
+                    probability = TRUE, num.trees = 1000)$predictions[, 2]
+dim(Xb)
+```
+
+`bcf` wants numeric matrices, so the `race` factor goes through `model.matrix` first. The propensity score is the out-of-bag forest estimate we already used for the overlap diagnostic.
+
+## Fit
+
+```{r}
+#| echo: true
+#| message: false
+#| warning: false
+sink(tempfile())
+bcf_nsw <- bcf(y = lalonde$re78, z = lalonde$treat,
+               x_control  = Xb,
+               x_moderate = Xb,
+               pihat      = pihat_nsw,
+               nburn = 2000, nsim = 2000, n_chains = 2,
+               no_output = TRUE, verbose = FALSE, random_seed = 2026)
+sink()
+```
+
+## ATT
+
+```{r}
+#| echo: true
+tau_nsw  <- bcf_nsw$tau
+att_post <- rowMeans(tau_nsw[, lalonde$treat == 1])
+
+round(c(mean = mean(att_post), sd = sd(att_post),
+        quantile(att_post, c(0.025, 0.975))))
+```
+
+- The experimental benchmark of \$1794 sits inside it; so does zero. Same verdict as DML, reached by a completely different route.
+
+## Heterogeneity
+
+```{r}
+#| echo: true
+#| fig-height: 3.4
+tauhat_nsw <- colMeans(tau_nsw)
+treated <- lalonde$treat == 1
+c(sd = round(sd(tauhat_nsw[treated])))
+round(quantile(tauhat_nsw[treated], c(0.1, 0.5, 0.9)))
+```
+
+## Plot I
+
+```{r}
+#| echo: true
+#| eval: false
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+plot(density(att_post), main = "Posterior for the ATT", xlab = "US$",
+     lwd = 2, col = "#40666e")
+abline(v = 1794, lwd = 2, lty = 2, col = "#c0504d")
+abline(v = 0, col = "grey60")
+hist(tauhat_nsw[treated], breaks = 25, col = "#40666e", border = "white",
+     main = expression("Posterior mean "*hat(tau)(x)*", treated"), xlab = "US$")
+```
+
+## Plot 2
+
+```{r}
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+plot(density(att_post), main = "Posterior for the ATT", xlab = "US$",
+     lwd = 2, col = "#40666e")
+abline(v = 1794, lwd = 2, lty = 2, col = "#c0504d")
+abline(v = 0, col = "grey60")
+hist(tauhat_nsw[treated], breaks = 25, col = "#40666e", border = "white",
+     main = expression("Posterior mean "*hat(tau)(x)*", treated"), xlab = "US$")
+```
+
+## Reading it
+
+- The spread of $\hat\tau$ across treated units has SD \$405, against a posterior SD of \$785 for the average effect itself.
+
+- Translation: **the heterogeneity we can see is smaller than our uncertainty about the mean.** With 185 treated units that is the honest conclusion, and the $\tau$ prior is what keeps us from reporting a subgroup story instead.
+
+- Do not read the tail of the histogram as "these people were harmed". Those are shrunken point estimates, and their individual intervals all contain zero.
+:::
+
+## What BCF Adds
+
+- **Over DML:** a full posterior instead of a point estimate and a standard error, and $\tau(\boldsymbol{x})$ rather than a single $\beta$.
+
+- **Over a causal forest:** an explicit prior you can state, defend, and change, rather than tuning parameters chosen by cross-validation on a quantity you cannot observe.
+
+- **Over plain BART with an interaction:** the propensity score inside $\mu$, and shrinkage aimed at $\tau$ alone.
+
+::: callout-important
+## The cost
+
+Everything above is conditional on the prior. Report the defaults you used, and---if a heterogeneity claim is doing real work in your paper---show that it survives loosening `base_moderate` and `power_moderate`.
 :::
 
 ## References
