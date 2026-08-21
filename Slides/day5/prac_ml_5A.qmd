@@ -26,7 +26,7 @@ editor_options:
 
 ::::: columns
 ::: {.column width="50%"}
-### Linear Models
+### Linear Models and Trees
 
 - Draw straight lines/hyperplanes.
 - Work well for simple structured data.
@@ -220,7 +220,30 @@ flowchart LR
 
 - Vectorization enable parallel execution on GPUs and TPUs.
 
+## Illustration
+
+```{mermaid}
+%%| echo: false
+flowchart LR
+  X1[X1=1] --> |2| SUM1[S1=2]
+  X2[X2=-1] --> |1| SUM1
+  B1[B1=1] --> |1| SUM1
+  SUM1 --> |ReLU| H1[H1=2]
+  X1 --> |-3| SUM2[S2=-3]
+  X2 --> |-1| SUM2
+  B2[B2=1] --> |-1| SUM2
+  SUM2 --> |ReLU| H2[H2=0]
+  H1 --> |1| SUM3
+  H2 --> |-1| SUM3
+  B3[B3=1] --> |-1| SUM3[S3 = 1]
+  SUM3 --> |sigmoidal| PRED["Prediction=0.731"]
+```
+
 # Basic Optimization Theory {background-color="#40666e"}
+
+## Gradient Descent
+
+![](images/graddesc.jpeg){fig-align="center"}
 
 ## The Optimization Loop
 
@@ -230,9 +253,33 @@ In back-propagation, training a neural network follows three steps:
 
 2.  **Backward Pass:** Loss $\rightarrow$ weights/biases; we calculate gradients $\partial L/\partial \theta$ using the chain rule.
 
-3.  **Gradient Descent:** Shift weights in the opposite direction of the gradient:
+## The Backward Pass
 
-    $$\theta^* = \theta - \eta \cdot \frac{\partial L}{\partial \theta}$$
+::: panel-tabset
+## Loss
+
+Imagine $Y = 1$ and we have only one training instance. We compute the **cross-entropy loss**:
+
+$$L = -\sum_{m=1}^M y_m \cdot \ln (\pi_m)$$
+
+In our case, $L = - (1 \cdot \ln (0.731)) = 0.313$.
+
+## Example 1
+
+We want to update the weight of H1 on the final prediction:
+
+$$\frac{\partial L}{\partial w_{31}} = \frac{\partial L}{\partial \hat{y}} \cdot \frac{\partial \hat{y}}{\partial S_3} \cdot \frac{\partial S_3}{\partial w_{31}}$$
+
+Here: (1) $\frac{\partial L}{\partial \hat{y}} = -\frac{1}{\hat{y}} = -1.368$; (2) $\frac{\partial \hat{y}}{\partial S_3} = \hat{y} \cdot (1 - \hat{y}) = 0.197$; and (3) $\frac{\partial S_3}{\partial w_{31}} = 2$.
+
+## Example 2
+
+We want to update the weight of X1 on H1:
+
+$$\frac{\partial L}{\partial w_{11}} = \frac{\partial L}{\partial \hat{y}} \cdot \frac{\partial \hat{y}}{\partial S3} \cdot \frac{\partial S3}{\partial H1} \cdot \frac{\partial H1}{\partial S1} \cdot \frac{\partial S1}{\partial w_{11}}$$
+
+Here, we recycle the first two terms from Example 1. Further, (1) $\frac{\partial S3}{\partial H_1} = w_{31} = 1$; (2) $\frac{\partial H_1}{\partial S_1} = 1$; and (3) $\frac{\partial S1}{\partial w_{11}} = X1 = 1$.
+:::
 
 ## Mini-Batch Gradient Descent
 

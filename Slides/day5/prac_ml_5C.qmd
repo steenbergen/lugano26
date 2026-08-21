@@ -1,0 +1,392 @@
+---
+title: TABULAR FOUNDATION MODELS
+subtitle: Can Neural Networks Beat Gradient Boosting for Tabular Data?
+author:
+  - name: Marco R. Steenbergen
+    orcid: 0000-0002-5709-5165
+    email: steenbergen@ipz.uzh.ch
+    affiliations: University of Zurich
+date: last-modified
+format:
+  clean-revealjs:
+    revealjs-plugins:
+      - tabset
+    pdf-separate-fragments: true
+    mermaid-format: svg
+bibliography: /Users/prior/Resources/References/master.bib
+self-contained: true
+embed-resources: true
+editor_options: 
+  chunk_output_type: console
+---
+
+## Overview
+
+By the end of this lecture you should be able to:
+
+- Explain why **tabular data** has been the last stronghold of "classical" ML.
+- Describe what a **foundation model** is, and why the idea escaped from language into tables.
+- Explain how **TabPFN** learns a whole dataset *without gradient descent at fit time*, using **in-context learning**.
+- Judge, for a given problem, whether a tabular foundation model or gradient-boosted trees is the better tool.
+
+::: notes
+Set expectations: this is a conceptual lecture, not a coding tutorial. We'll finish with one small code snippet and a decision guide they can actually use. Audience is upper-undergrad — they know trees, gradient boosting, and neural nets at an intuition level. Keep architecture at the "what and why", not the "prove the attention math" level.
+:::
+
+# The Problem with Tables {background-color="#40666e"}
+
+## Tabular data is everywhere {.smaller}
+
+Rows are examples, columns are features. Think spreadsheets and database tables:
+
+| age | income | region | churned? |
+|----:|-------:|:-------|:--------:|
+|  34 | 52,000 | North  |    no    |
+|  61 | 38,000 | South  |   yes    |
+|  27 | 71,000 | East   |    no    |
+
+This is the data behind credit scoring, medical risk, insurance, fraud, sales forecasting, scientific measurements — probably **most** of the real-world prediction problems in the world.
+
+::: notes
+Anchor it in their world. Most business and scientific ML is still tabular, not images or text. Emphasize the mixed types: numeric (age, income), categorical (region), plus a target. Missing values and messy categories are the norm.
+:::
+
+## Why tables resisted deep learning {.smaller}
+
+Deep learning conquered images and text years ago. Tables held out. Why?
+
+- **No natural structure to exploit.** Images have spatial locality, text has sequence order. Columns can be shuffled — there's no built-in geometry for a network to lean on.
+- **Heterogeneous features.** One column is age in years, the next is a categorical region, the next a noisy sensor reading. Different scales, different meanings.
+- **Small datasets.** Many real tables have hundreds or a few thousand rows — too few to train a big neural network from scratch.
+
+::: notes
+This is the "why is this hard" slide. The shuffle-invariance point is the deep one: a CNN's whole advantage is that nearby pixels relate; tabular columns have no such pre-train. Small-data point sets up why in-context learning is attractive later.
+:::
+
+## The reigning champion: gradient-boosted trees {.smaller}
+
+For \~15 years, the default winner on tabular data has been **gradient-boosted decision trees (GBDTs)**:
+
+- Libraries: **XGBoost, LightGBM, CatBoost**.
+- Robust to mixed feature types and different scales, handle missing values, hard to beat.
+- The running joke: *"Just use XGBoost."*
+
+The catch: for every new dataset you **train a fresh model** and **tune its hyperparameters** — often a slow, fiddly search.
+
+::: notes
+Make sure they leave knowing GBDTs are strong and still the baseline to beat. The "train fresh + tune every time" is the pain point that foundation models attack. If asked: neural nets historically *lost* to GBDTs on tabular benchmarks — that's the surprising part of this whole story.
+:::
+
+## The classic ML workflow {.smaller}
+
+For each new dataset, we repeat the whole loop:
+
+```         
+new dataset ──► choose model ──► TRAIN (gradient descent / boosting)
+                                     │
+                                     ▼
+                         tune hyperparameters (hours)
+                                     │
+                                     ▼
+                              predict on new rows
+```
+
+Every problem starts from scratch. Nothing is reused across datasets.
+
+::: notes
+Contrast this explicitly with what's coming: foundation models flip it so the expensive learning happens ONCE, up front, and each new dataset is nearly free. Plant that seed here.
+:::
+
+# The Foundation Model Idea {background-color="#40666e"}
+
+## What is a "foundation model"?
+
+A model **pre-trained once** on a huge, broad corpus, then **reused** across many downstream tasks with little or no extra training.
+
+- Large language models (GPT-style) are the famous example: pre-train on the internet, then answer questions, translate, summarize.
+- Key trick: **in-context learning** — you give examples in the prompt, and the model adapts *without changing its weights*.
+
+The question of this lecture: **can we do this for tables?**
+
+::: notes
+Bridge from something they know (LLMs) to something new. The core surprise is that "learning" can happen inside a single forward pass rather than by updating weights. Define in-context learning carefully — it's the load-bearing concept.
+:::
+
+## In-context learning, quickly
+
+You've seen this with LLMs. Show a few examples in the prompt:
+
+```         
+apple  -> fruit
+carrot -> vegetable
+banana -> fruit
+potato -> ?
+```
+
+The model answers "vegetable" — it **inferred the rule from the examples**, no retraining.
+
+Now imagine the "examples" are the **rows of your training table**, and the "?" is a new row you want a prediction for.
+
+::: notes
+This analogy is the heart of the lecture. The labeled training rows play the role of the few-shot examples; the test row is the query. Everything about TabPFN follows from taking this seriously. Pause here and check understanding.
+:::
+
+## The big idea for tables
+
+> Pretrain a single model on **millions of synthetic prediction tasks**, so it learns the general skill of *"look at labeled rows, predict the label of a new row."*
+
+Then, for a real data set:
+
+- **No training.** Feed the training rows + the test row into one forward pass.
+- **No tuning.** The model has already learned how to learn.
+- Prediction comes out in **seconds**.
+
+This is a **tabular foundation model (TFM)**.
+
+::: notes
+State the payoff clearly. The expensive part (pretraining) is done once by the model's authors. The user just runs inference. Emphasize "no training, no tuning" but flag we'll complicate that claim later (it's not fully plug-and-play).
+:::
+
+# How TabPFN Works {background-color="#40666e"}
+
+## TabPFN: the breakthrough
+
+**TabPFN** (pre-train-Data Fitted Network) is the model that made this work and put it on the map — published in ***Nature*****, January 2025** [@hollmann2025Accurate].
+
+- Handles **classification and regression** on small-to-medium tables.
+- **No per-dataset training**, no hyperparameter search.
+- On average datasets it produced predictions in **\~2.8 seconds** that beat an ensemble of strong baselines tuned for **4 hours**.
+
+::: notes
+"PFN" = pre-train-data Fitted Network — we unpack the name over the next three slides. The 2.8s-vs-4h number is the headline that makes students sit up; it's from the Nature paper. Note it's small-to-medium data — that limit matters and we'll return to it.
+:::
+
+## Idea 1 — pre-train-Data Fitted Networks
+
+A **PFN** is a transformer trained to **approximate Bayesian prediction**.
+
+- Pick a **pre-train**: a belief about what plausible datasets look like.
+- Sample lots of datasets from that pre-train; train the network to predict held-out labels.
+- After enough of this, the network **is** a fast approximation of the ideal Bayesian predictor for data from that pre-train.
+
+In short: instead of hand-designing a learning algorithm, we **train a network to be one**.
+
+::: notes
+Bayesian framing at intuition level only — don't derive the posterior predictive. The key idea: "learn the learning algorithm." The network isn't fit to one dataset; it's fit to a whole *distribution* of datasets. This is the conceptual leap; go slow.
+:::
+
+## Idea 2 — Trained entirely on synthetic data
+
+TabPFN never pretrains on real datasets. It is trained on roughly **100 million synthetic datasets**.
+
+- Generated using **structural causal models** — little random "data-generating machines" that mimic the kinds of relationships real tables contain (causes, effects, noise, nonlinearities).
+- Sidesteps privacy and data-contamination problems entirely.
+- Teaches the model a broad, general **pre-train over "reasonable" tabular problems**.
+
+::: notes
+Students often assume "foundation model = trained on tons of real data like GPT." The twist here: it's synthetic, by design. Structural causal models = graphs of variables where some cause others, plus noise. The diversity of these synthetic tasks is what gives TabPFN its generality.
+:::
+
+## Idea 3 — Attention over rows *and* columns
+
+The architecture is a transformer with **two-way attention**:
+
+- **Across rows** — so each row can "look at" the other examples (this is the in-context learning).
+- **Across columns** — so features can interact, and the model doesn't care about column order.
+
+This built-in **shuffle-invariance** is exactly the tabular structure classical networks lacked.
+
+::: notes
+Tie back to the Slide 4 problem: tables have no fixed geometry, so the architecture is designed to be invariant to column order and to treat rows as an exchangeable set. That's the engineering insight that makes a transformer suit tables.
+:::
+
+## Putting it together: prediction in one pass
+
+```         
+   TRAINING ROWS (features + labels)  ┐
+                                       ├──►  TabPFN  ──►  prediction + uncertainty
+   TEST ROW (features, label = ?)     ┘        (single forward pass)
+```
+
+- The training rows are the **context**; the test row is the **query**.
+- **No gradient descent at fit time** — "fitting" is just loading the rows into the forward pass.
+- Because it approximates a Bayesian predictor, it returns a **probability distribution**, not just a point guess.
+
+::: notes
+Contrast hard with Slide 6's loop. There's no optimization when you "fit" TabPFN — calling .fit() basically just memorizes the context. All the real learning happened during pretraining. The uncertainty output is a genuine bonus: good calibration matters in medicine, finance, science.
+:::
+
+## What Happens in Simple Language
+> When TabPFN reads a training row, it essentially asks: "which of the millions of synthetic data-generating patterns I saw during pre-training does this table look like?" It then takes the prediction rule that fits the pattern to label the rows in your table.
+
+## Why the uncertainty is a big deal
+
+Because TabPFN approximates **Bayesian inference**, its outputs are naturally probabilistic.
+
+- You get **calibrated confidence**, not just a label.
+- Valuable wherever the cost of being wrong is high: clinical risk, credit decisions, scientific measurement.
+
+GBDTs can be made to output probabilities too, but well-calibrated uncertainty is something TabPFN gets more naturally from its design.
+
+::: notes
+Keep this short. The teaching point: a model that says "70% ± a lot" is more useful than one that just says "yes" when stakes are high. Caveat honestly — calibration in practice still needs checking; don't oversell.
+:::
+
+# The State of the Art (2025–2026) {background-color="#40666e"}
+
+## TabPFN-2.5: scaling it up
+
+The original TabPFN was limited to small tables. **TabPFN-2.5** (pre-train Labs, Nov 2025) pushed the limits hard:
+
+- Handles up to **\~50,000 rows** and **\~2,000 features** — roughly a **20× increase** in data cells over v2.
+- Beats a **default XGBoost** on the large majority of benchmark datasets (reported \~85–87% win rates on bigger tasks).
+- Matches **AutoGluon**, a heavily tuned 4-hour AutoML ensemble — out of the box.
+
+::: notes
+The v1/v2 story was "amazing but only tiny datasets." 2.5 is the "now it scales to real-world sizes" chapter. Numbers are approximate and benchmark-dependent — say so. pre-train Labs is the startup founded by TabPFN's authors.
+:::
+
+## From research model to production
+
+A practical problem: running a big transformer for every prediction is slow and heavy.
+
+**TabPFN-2.5** ships a **distillation engine**:
+
+- Compresses the foundation model into a small **MLP** or **tree ensemble**.
+- Keeps most of the accuracy, with **orders-of-magnitude lower latency**.
+- Gives you a lightweight, deployable model for production.
+
+::: notes
+This answers the natural "but is it fast enough to deploy?" question. Distillation = train a small student model to imitate the big teacher. This is how you get the accuracy of a TFM at the speed of a small model.
+:::
+
+## It's not just TabPFN anymore
+
+A whole ecosystem emerged in 2024–2026:
+
+- **TabICL** — column-then-row attention; scales to hundreds of thousands of rows, much faster on wide tables.
+- **TabDPT** — combines in-context learning with self-supervised pre-training on real datasets.
+- **CARTE** — targets features across tables with different schemas.
+- **Real-TabPFN, LimiX, Mitra, TabFlex, …** — various scaling and data-type innovations.
+
+The field is moving **fast** — new state-of-the-art every few months.
+
+::: notes
+Goal is awareness, not memorization. Students should know TabPFN kicked it off but isn't the only game. The pace point matters: anything you teach as "SOTA" will be stale within a year. Teach the *ideas*, not the leaderboard.
+:::
+
+## How do we know they're good? Benchmarks
+
+Comparisons run on shared **benchmark suites** — e.g., **TabArena** — across many datasets, measuring accuracy vs GBDTs and AutoML.
+
+Be a **critical** consumer of these results:
+
+- Some benchmarks are curated by the **same labs** that build the models.
+- Win rates depend heavily on **which datasets** are included and their sizes.
+- "Beats XGBoost" usually means **default** XGBoost — a well-tuned GBDT is still a serious opponent.
+
+::: notes
+Teach healthy skepticism. This is a great methods-literacy moment: who made the benchmark, what's the baseline, is it default or tuned. Don't let students walk away thinking GBDTs are dead — they're not.
+:::
+
+# Using The Well {background-color="#40666e"}
+
+## Strengths at a glance
+
+- **No training, no tuning** — a strong model in seconds.
+- **Excellent on small-to-medium data** — often the regime where deep learning used to fail.
+- **Built-in, well-calibrated uncertainty.**
+- Handles **missing values and categoricals** with minimal preprocessing.
+- Frees you from the hyperparameter-search grind.
+
+::: notes
+The honest summary of the upside. "Strong baseline in 10 lines of code and 3 seconds" is the real day-to-day value even before you argue about who wins benchmarks.
+:::
+
+## Limitations & gotchas
+
+Not the "plug-and-play magic" the marketing suggests:
+
+- **Data size ceilings** — even 2.5 tops out; genuinely huge datasets still favor GBDTs.
+- **Memory grows with the dataset** — the training rows ride along in every prediction.
+- **Hidden defaults bite** — e.g., passing a NumPy array vs a DataFrame can silently change how categoricals are handled.
+- **Fast-moving & partly commercial** — licensing and rapid version churn.
+
+::: notes
+Balance the hype from Part 4. The categorical/input-format gotcha is real and costs people accuracy without any error message. Message: powerful, but you still have to know what you're doing.
+:::
+
+## When to reach for which
+
+| Situation | Better starting point |
+|:------------------------|:----------------------------------------------|
+| Small/medium table, want a strong model *fast* | **Tabular foundation model** |
+| Uncertainty / calibration matters | **Tabular foundation model** |
+| Millions of rows | **GBDT (XGBoost/LightGBM)** |
+| Tight latency / tiny deployment footprint | **GBDT** (or a distilled TFM) |
+| You have time to tune and squeeze out the last % | **Well-tuned GBDT** |
+
+Best practice today: **try both** — a TFM makes an excellent, near-free baseline.
+
+::: notes
+This is the slide students will screenshot. The practical takeaway: TFMs don't replace GBDTs yet; they give you a fantastic zero-effort baseline and often win on small data and calibration. "Try both" is the mature answer.
+:::
+
+## Trying it yourself
+
+The API deliberately mimics scikit-learn:
+
+``` python
+# pip install tabpfn
+from tabpfn import TabPFNClassifier
+
+clf = TabPFNClassifier()
+clf.fit(X_train, y_train)      # no real training — just loads the context
+preds  = clf.predict(X_test)
+probas = clf.predict_proba(X_test)   # calibrated probabilities
+```
+
+`.fit()` doesn't optimize anything — it just hands the rows to the forward pass.
+
+::: notes
+If anyone codes along: it really is this short. The teaching beat is that .fit() is a misnomer here — no gradient descent happens. Good moment to reinforce the whole in-context-learning idea one last time.
+:::
+
+## Open questions
+
+- **Scaling** — can in-context learning reach truly large tables without losing its edge?
+- **Real vs synthetic pre-trains** — how much does pretraining on real data help, and when?
+- **Interpretability** — these models are far more opaque than a decision tree.
+- **Fair, independent evaluation** — benchmarks not run by the model's own authors.
+
+::: notes
+Frame these as live research directions — good for students thinking about projects or theses. The synthetic-vs-real-pre-train question is especially open and interesting.
+:::
+
+## Takeaways
+
+1.  Tabular data was deep learning's last holdout; **gradient-boosted trees** ruled for years.
+2.  A **tabular foundation model** is pretrained once, then predicts on new tables via **in-context learning** — *no per-dataset training*.
+3.  **TabPFN** made this real: a transformer trained on **millions of synthetic datasets**, approximating **Bayesian** prediction, with attention over rows *and* columns.
+4.  It's now competitive with — sometimes better than — tuned GBDTs on small/medium data, but it's **not magic**: size limits, hidden defaults, and a fast-moving field.
+5.  In practice: **try a TFM as your baseline, keep GBDTs in your toolkit.**
+
+::: notes
+If they remember one sentence: "It learns from the training rows inside a single forward pass, because the real learning already happened during pretraining." Everything else hangs off that.
+:::
+
+## Discussion
+
+- Why might training on **synthetic** data ever beat training on **real** data?
+- TabPFN carries its training rows into every prediction. What problems does that create at scale?
+- If a benchmark is built by a model's own authors, how would *you* design a fairer test?
+
+::: notes
+Use whichever fits your time. The synthetic-data question tends to spark the best debate — connect it back to structural causal models and the diversity of the pre-train.
+:::
+
+## References
+
+::: notes
+The Nature paper is the primary source and the one to point students at first. The TabPFN-2.5 report is the up-to-date scaling story. The LAMDA survey is a good jumping-off point for the broader landscape.
+:::
